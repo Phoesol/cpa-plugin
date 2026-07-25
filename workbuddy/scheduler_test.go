@@ -19,7 +19,7 @@ func mustMarshal(t *testing.T, v any) []byte {
 func parsePickResponse(t *testing.T, raw []byte) pluginapi.SchedulerPickResponse {
 	t.Helper()
 	var env struct {
-		OK     bool                           `json:"ok"`
+		OK     bool                            `json:"ok"`
 		Result pluginapi.SchedulerPickResponse `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -241,9 +241,9 @@ func TestCandidateDisabled(t *testing.T) {
 func TestEnsureDefaultActiveAuth(t *testing.T) {
 	resetActiveAuth(t)
 	id := ensureDefaultActiveAuth([]wbAccount{
-		{AuthIndex: "a1", Disabled: true},
-		{AuthIndex: "a2", Exhausted: false},
-		{AuthIndex: "a3"},
+		{AuthIndex: "a1", AuthID: "a1", Disabled: true},
+		{AuthIndex: "a2", AuthID: "a2", Exhausted: false},
+		{AuthIndex: "a3", AuthID: "a3"},
 	})
 	if id != "a2" {
 		t.Fatalf("want first ready a2, got %q", id)
@@ -253,8 +253,8 @@ func TestEnsureDefaultActiveAuth(t *testing.T) {
 	}
 	// Already set + still live + not exhausted → keep
 	id2 := ensureDefaultActiveAuth([]wbAccount{
-		{AuthIndex: "a2"},
-		{AuthIndex: "a3"},
+		{AuthIndex: "a2", AuthID: "a2"},
+		{AuthIndex: "a3", AuthID: "a3"},
 	})
 	if id2 != "a2" {
 		t.Fatalf("should keep a2, got %q", id2)
@@ -266,9 +266,9 @@ func TestEnsureDefaultActiveAuth_SwitchesWhenExhausted(t *testing.T) {
 	// Selected a1 is exhausted → should switch to first non-exhausted.
 	setActiveAuthID("a1")
 	id := ensureDefaultActiveAuth([]wbAccount{
-		{AuthIndex: "a1", Exhausted: true},
-		{AuthIndex: "a2", Exhausted: false},
-		{AuthIndex: "a3", Exhausted: false},
+		{AuthIndex: "a1", AuthID: "a1", Exhausted: true},
+		{AuthIndex: "a2", AuthID: "a2", Exhausted: false},
+		{AuthIndex: "a3", AuthID: "a3", Exhausted: false},
 	})
 	if id != "a2" {
 		t.Fatalf("want switch to a2, got %q", id)
@@ -282,8 +282,8 @@ func TestEnsureDefaultActiveAuth_AllExhausted_KeepsCurrent(t *testing.T) {
 	resetActiveAuth(t)
 	setActiveAuthID("a1")
 	id := ensureDefaultActiveAuth([]wbAccount{
-		{AuthIndex: "a1", Exhausted: true},
-		{AuthIndex: "a2", Exhausted: true},
+		{AuthIndex: "a1", AuthID: "a1", Exhausted: true},
+		{AuthIndex: "a2", AuthID: "a2", Exhausted: true},
 	})
 	if id != "a1" {
 		t.Fatalf("all exhausted should keep a1, got %q", id)

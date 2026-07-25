@@ -5,11 +5,11 @@ import "testing"
 func TestSummarizeCredits(t *testing.T) {
 	accounts := []wbAccount{
 		{
-			Region: "cn",
+			Region:  "cn",
 			Credits: &creditsSummary{TotalRemain: 100, TotalUsed: 50, Packages: []packageSummary{{Name: "a"}}},
 		},
 		{
-			Region: "global",
+			Region:  "global",
 			Credits: &creditsSummary{TotalRemain: 20, TotalUsed: 230, Packages: []packageSummary{{Name: "b"}}},
 		},
 		{

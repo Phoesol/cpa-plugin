@@ -110,6 +110,7 @@ func candidateDisabled(c pluginapi.SchedulerAuthCandidate) bool {
 
 // cachedCreditsScore returns (remain, exhausted) from accountCache.
 // remain is -1 when unknown; exhausted uses isCreditsExhausted.
+// Key is auth.ID (same as SchedulerAuthCandidate.ID and activeAuthID).
 func cachedCreditsScore(authID string) (int64, bool) {
 	v, ok := accountCache.Load(authID)
 	if !ok {

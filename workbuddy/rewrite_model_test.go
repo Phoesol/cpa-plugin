@@ -1,5 +1,7 @@
 package main
+
 import "testing"
+
 func TestRewriteModelInBody(t *testing.T) {
 	in := []byte(`{"model":"alias-name","messages":[{"role":"user","content":"hi"}]}`)
 	out := rewriteModelInBody(in, "real-model-id")

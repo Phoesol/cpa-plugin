@@ -57,7 +57,6 @@ func TestForceMaxThinking_AlreadyHigh(t *testing.T) {
 	}
 }
 
-
 func TestTruncate(t *testing.T) {
 	if truncate("hello", 10) != "hello" {
 		t.Fatal("short string should be unchanged")

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.28
+
+### Fixed
+- 修复面板选中卡片与实际路由账号不一致的根本问题
+  根因：activeAuthID 存的是 auth.Index（运行时 SHA256 hash），但 scheduler
+  的 SchedulerAuthCandidate.ID 是 auth.ID（持久化 UUID），两者永远不匹配，
+  导致 pickActiveAuth 永远走 fallback 选第一个，面板显示选中第一个但实际
+  路由到别的账号。同时 cachedCreditsScore 用 auth.ID 查 accountCache（key
+  是 auth.Index）也查不到，exhausted 判断也坏了。
+  修复：全链路统一用 auth.ID — activeAuthID、accountCache key、
+  lifecycleState key、面板 selected 判断、/select API 返回值全部改用
+  auth.ID。lifecycle 函数（reconcileOneAccount/disableAuth/reenableAuth/
+  deleteAuth/syncAuthNote）加 authID 参数，resolveAuthIndex 改为
+  resolveAuthIndexAndID 同时返回 index+ID。
+- 修复首次加载面板时选中耗尽账号的问题
+  首次 GET /accounts 不拉 credits（fetchCredits=false），所有卡片
+  Exhausted=false，ensureDefaultActiveAuth 选第一个。lazyLoadCredits
+  异步获取积分后发现第一个已耗尽，但选中状态不会更新。
+  修复：lazyLoadCredits 全部完成后前端静默再拉一次 /accounts（此时
+  cache 已有 credits，light load 能拿到正确 exhausted 和 selected），
+  重新渲染卡片。
+
 ## 0.6.27
 
 ### Fixed

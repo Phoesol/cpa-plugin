@@ -110,7 +110,7 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 	cur := getActiveAuthID()
 	live := make(map[string]wbAccount, len(accounts))
 	for _, a := range accounts {
-		live[a.AuthIndex] = a
+		live[a.AuthID] = a
 	}
 
 	// Rule 1: current selection is live AND not exhausted → keep.
@@ -124,16 +124,16 @@ func ensureDefaultActiveAuth(accounts []wbAccount) string {
 	var firstAny, firstOK, firstReady string
 	for _, a := range accounts {
 		if firstAny == "" {
-			firstAny = a.AuthIndex
+			firstAny = a.AuthID
 		}
 		if a.Disabled {
 			continue
 		}
 		if firstOK == "" {
-			firstOK = a.AuthIndex
+			firstOK = a.AuthID
 		}
 		if !a.Exhausted && firstReady == "" {
-			firstReady = a.AuthIndex
+			firstReady = a.AuthID
 		}
 	}
 

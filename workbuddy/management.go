@@ -241,6 +241,7 @@ func usageReportConfigured() bool {
 // wbAccount is one row of the dashboard.
 type wbAccount struct {
 	AuthIndex    string          `json:"auth_index"`
+	AuthID       string          `json:"auth_id,omitempty"`
 	Name         string          `json:"name"`
 	Label        string          `json:"label"`
 	Nickname     string          `json:"nickname"`
@@ -811,7 +812,7 @@ type accountCacheEntry struct {
 }
 
 var (
-	accountCache    sync.Map // auth_index -> *accountCacheEntry
+	accountCache    sync.Map // auth_id (auth.ID) -> *accountCacheEntry
 	accountCacheTTL = 45 * time.Second
 )
 
@@ -819,9 +820,9 @@ var (
 // round-trip dominates; 3 serial calls ≈ 3× latency). On any individual
 // failure the previous cached value is kept (stale-while-error) so a
 // transient upstream 500 does not blank the panel row.
-func cachedAccountDetails(authIndex string, sa *storedAuth, force bool) (plan string, ci *checkinSummary, cr *creditsSummary, errs []string) {
+func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan string, ci *checkinSummary, cr *creditsSummary, errs []string) {
 	var prev *accountCacheEntry
-	if v, ok := accountCache.Load(authIndex); ok {
+	if v, ok := accountCache.Load(authID); ok {
 		prev = v.(*accountCacheEntry)
 		if !force && time.Since(prev.fetched) < accountCacheTTL {
 			// Return cached values. Do NOT mutate prev.credits here — concurrent
@@ -877,7 +878,7 @@ func cachedAccountDetails(authIndex string, sa *storedAuth, force bool) (plan st
 		// Stamp snapshot time for panel/API consumers (A-09 observability).
 		cr.FetchedAt = now.UTC().Format(time.RFC3339)
 	}
-	accountCache.Store(authIndex, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
+	accountCache.Store(authID, &accountCacheEntry{checkin: ci, credits: cr, plan: plan, fetched: now})
 	// Soft cap: if map is huge, drop oldest-looking entries beyond bound.
 	pruneAccountCacheSoftCap(accountCacheSoftCap)
 	return plan, ci, cr, errList
@@ -943,7 +944,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	// monotonically for the lifetime of the process.
 	live := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		live[f.AuthIndex] = struct{}{}
+		live[f.ID] = struct{}{}
 	}
 	accountCache.Range(func(key, value any) bool {
 		idx, _ := key.(string)
@@ -972,6 +973,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			defer wg.Done()
 			acct := wbAccount{
 				AuthIndex: f.AuthIndex,
+				AuthID:    f.ID,
 				Name:      f.Name,
 				Label:     f.Label,
 				Status:    f.Status,
@@ -994,7 +996,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			acct.UID = sa.Account.UID
 			acct.Region = accountRegion(sa)
 			if fetchCredits {
-				plan, ci, cr, errs := cachedAccountDetails(f.AuthIndex, sa, force)
+				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr
@@ -1003,11 +1005,11 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 					acct.TrialClaimed = hasTrialPack(cr)
 				}
 				// Keep note in sync (throttled); do not block dashboard on save errors.
-				_ = syncAuthNote(f.AuthIndex, sa, cr, acct.Disabled)
+				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
 				acct.Error = strings.Join(errs, "; ")
 			} else {
 				// Light load: use cached values if available, but don't fetch upstream.
-				if v, ok := accountCache.Load(f.AuthIndex); ok {
+				if v, ok := accountCache.Load(f.ID); ok {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
 						acct.Plan = e.plan
 						acct.Checkin = e.checkin
@@ -1047,7 +1049,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 					a.Disabled = d
 				}
 				// Credits may have been refreshed during reconcile — re-read cache.
-				if v, ok := accountCache.Load(a.AuthIndex); ok {
+				if v, ok := accountCache.Load(a.AuthID); ok {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
 						if e.credits != nil {
 							a.Credits = e.credits
@@ -1075,7 +1077,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	sum := summarizeCredits(out)
 	// Mark selected account in list for UI.
 	for i := range out {
-		out[i].Selected = out[i].AuthIndex == activeID
+		out[i].Selected = out[i].AuthID == activeID
 	}
 	resp := map[string]any{
 		"accounts":       out,
@@ -1225,9 +1227,9 @@ func runAutoCheckin() {
 			}
 			if isGlobalDomain(sa.Auth.Domain) {
 				// Global: never check-in or auto-claim trial. Lifecycle only.
-				accountCache.Delete(f.AuthIndex)
+				accountCache.Delete(f.ID)
 				if lifecycleEnabled() {
-					_, _ = reconcileOneAccount(f.AuthIndex, true)
+					_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 				}
 				continue
 			}
@@ -1236,15 +1238,15 @@ func runAutoCheckin() {
 			if err == nil && ci.Active && !ci.TodayCheckedIn {
 				_, _ = performCheckinCall(sa)
 			}
-			accountCache.Delete(f.AuthIndex)
+			accountCache.Delete(f.ID)
 			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(f.AuthIndex, true)
+				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 			}
 			continue
 		}
 		// Lifecycle-only (checkin off): reconcile handles its own get.
 		if lifecycleEnabled() {
-			_, _ = reconcileOneAccount(f.AuthIndex, true)
+			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 		}
 	}
 }
@@ -1341,6 +1343,7 @@ func mgmtHTMLResponse(body []byte) pluginapi.ManagementResponse {
 // checkinCandidate is a CN account that still needs daily check-in after prefilter.
 type checkinCandidate struct {
 	authIndex string
+	authID    string
 	nickname  string
 	sa        *storedAuth
 }
@@ -1413,7 +1416,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			// Prefer fresh status; fall back to cache today_checked_in if status fails.
 			ci, ciErr := fetchCheckinStatus(sa)
 			if ciErr != nil {
-				if cached := cachedCheckinToday(f.AuthIndex); cached != nil && *cached {
+				if cached := cachedCheckinToday(f.ID); cached != nil && *cached {
 					classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick}
 					return
 				}
@@ -1458,9 +1461,9 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		case "already":
 			already++
 			// Light cache refresh path for reenable after prior disable.
-			accountCache.Delete(cr.f.AuthIndex)
+			accountCache.Delete(cr.f.ID)
 			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(cr.f.AuthIndex, true)
+				_, _ = reconcileOneAccount(cr.f.AuthIndex, cr.f.ID, true)
 			}
 			if single {
 				results = append(results, map[string]any{
@@ -1471,7 +1474,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			}
 		case "eligible":
 			eligible = append(eligible, checkinCandidate{
-				authIndex: cr.f.AuthIndex, nickname: cr.nick, sa: cr.sa,
+				authIndex: cr.f.AuthIndex, authID: cr.f.ID, nickname: cr.nick, sa: cr.sa,
 			})
 		}
 	}
@@ -1504,9 +1507,9 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					"success": true, "skipped": true, "reason": "already",
 					"message": "already checked in today",
 				}}
-				accountCache.Delete(c.authIndex)
+				accountCache.Delete(c.authID)
 				if lifecycleEnabled() {
-					_, _ = reconcileOneAccount(c.authIndex, true)
+					_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
 				}
 				return
 			}
@@ -1533,10 +1536,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					out["success"] = true
 				}
 			}
-			accountCache.Delete(c.authIndex)
+			accountCache.Delete(c.authID)
 			mu.Unlock()
 			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(c.authIndex, true)
+				_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
 			}
 			outCh <- checkinOut{idx: i, out: out}
 		}(i, c)
@@ -1594,8 +1597,8 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 }
 
 // cachedCheckinToday returns cached today_checked_in when present.
-func cachedCheckinToday(authIndex string) *bool {
-	v, ok := accountCache.Load(authIndex)
+func cachedCheckinToday(authID string) *bool {
+	v, ok := accountCache.Load(authID)
 	if !ok {
 		return nil
 	}
@@ -1628,7 +1631,7 @@ func pruneCheckinLocks() {
 	}
 	live := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		live[f.AuthIndex] = struct{}{}
+		live[f.ID] = struct{}{}
 	}
 	checkinLocks.Range(func(key, _ any) bool {
 		idx, _ := key.(string)
@@ -1756,9 +1759,9 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 				out[k] = v
 			}
 		}
-		accountCache.Delete(authIndex) // refresh cache
+		accountCache.Delete(f.ID) // refresh cache
 		if lifecycleEnabled() {
-			_, _ = reconcileOneAccount(authIndex, true)
+			_, _ = reconcileOneAccount(authIndex, f.ID, true)
 		}
 		return out
 	}
@@ -1791,10 +1794,10 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 		if err != nil {
 			return map[string]any{"error": err.Error(), "auth_index": authIndex}
 		}
-		setActiveAuthID(authIndex)
+		setActiveAuthID(f.ID)
 		return map[string]any{
 			"ok":          true,
-			"active_auth": authIndex,
+			"active_auth": f.ID,
 			"region":      accountRegion(sa),
 			"nickname":    sa.Account.Nickname,
 			"uid":         sa.Account.UID,
@@ -1834,11 +1837,11 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				"auth_index": authIndex,
 				"nickname":   sa.Account.Nickname,
 				"uid":        sa.Account.UID,
-				"region":      accountRegion(sa),
+				"region":     accountRegion(sa),
 				"name":       f.Name,
 				"label":      f.Label,
 				"disabled":   f.Disabled,
-				"selected":   getActiveAuthID() == authIndex,
+				"selected":   getActiveAuthID() == f.ID,
 			}
 			if err != nil {
 				acct["error"] = err.Error()
@@ -1857,7 +1860,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				}
 				// Merge into existing cache entry (keep plan/checkin if present).
 				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(authIndex); ok {
+				if v, ok := accountCache.Load(f.ID); ok {
 					prev, _ = v.(*accountCacheEntry)
 				}
 				var plan string
@@ -1866,7 +1869,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 					plan = prev.plan
 					ci = prev.checkin
 				}
-				accountCache.Store(authIndex, &accountCacheEntry{
+				accountCache.Store(f.ID, &accountCacheEntry{
 					checkin: ci, credits: cr, plan: plan, fetched: now,
 				})
 			}
@@ -1876,11 +1879,11 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	}
 	// All accounts: return simplified list.
 	type acctCredits struct {
-		AuthIndex string           `json:"auth_index"`
-		Nickname  string           `json:"nickname"`
-		UID       string           `json:"uid"`
-		Credits   *creditsSummary  `json:"credits,omitempty"`
-		Error     string           `json:"error,omitempty"`
+		AuthIndex string          `json:"auth_index"`
+		Nickname  string          `json:"nickname"`
+		UID       string          `json:"uid"`
+		Credits   *creditsSummary `json:"credits,omitempty"`
+		Error     string          `json:"error,omitempty"`
 	}
 	var out []acctCredits
 	for _, f := range files {

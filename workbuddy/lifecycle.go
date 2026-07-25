@@ -444,7 +444,7 @@ func hostAuthSaveJSON(name string, raw []byte) error {
 
 // lifecycleStateUnchanged avoids redundant saves when note/disabled unchanged.
 var (
-	lifecycleState   sync.Map // auth_index -> lifecycleStateEntry
+	lifecycleState   sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
 	lifecycleSaveTTL = 30 * time.Second
 )
 
@@ -479,7 +479,7 @@ func pruneLifecycleState() {
 	}
 	live := make(map[string]struct{}, len(files))
 	for _, f := range files {
-		live[f.AuthIndex] = struct{}{}
+		live[f.ID] = struct{}{}
 	}
 	lifecycleState.Range(func(key, value any) bool {
 		idx, _ := key.(string)
@@ -495,7 +495,7 @@ func pruneLifecycleState() {
 }
 
 // disableAuth writes disabled:true for a CN (or fallback) account.
-func disableAuth(authIndex string, sa *storedAuth, cr *creditsSummary, reason string) error {
+func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
@@ -507,14 +507,14 @@ func disableAuth(authIndex string, sa *storedAuth, cr *creditsSummary, reason st
 			note = note + " · " + reason
 		}
 	}
-	if lifecycleStateUnchanged(authIndex, true, note) {
+	if lifecycleStateUnchanged(authID, true, note) {
 		return nil
 	}
 	// Prefer live physical file to preserve any extra fields if present.
 	phys, err := hostAuthGetPhysical(authIndex)
 	if err == nil && parseDisabledFromAuthJSON(phys.JSON) {
 		// already disabled; still refresh note if needed
-		if lifecycleStateUnchanged(authIndex, true, note) {
+		if lifecycleStateUnchanged(authID, true, note) {
 			return nil
 		}
 	}
@@ -531,13 +531,13 @@ func disableAuth(authIndex string, sa *storedAuth, cr *creditsSummary, reason st
 	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
 		return err
 	}
-	rememberLifecycleState(authIndex, true, note)
-	accountCache.Delete(authIndex)
+	rememberLifecycleState(authID, true, note)
+	accountCache.Delete(authID)
 	return nil
 }
 
 // reenableAuth writes disabled:false when CN has credits again.
-func reenableAuth(authIndex string, sa *storedAuth, cr *creditsSummary) error {
+func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
@@ -546,7 +546,7 @@ func reenableAuth(authIndex string, sa *storedAuth, cr *creditsSummary) error {
 		return nil
 	}
 	note := displayNote(sa, cr, false)
-	if lifecycleStateUnchanged(authIndex, false, note) {
+	if lifecycleStateUnchanged(authID, false, note) {
 		return nil
 	}
 	phys, err := hostAuthGetPhysical(authIndex)
@@ -563,13 +563,13 @@ func reenableAuth(authIndex string, sa *storedAuth, cr *creditsSummary) error {
 	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
 		return err
 	}
-	rememberLifecycleState(authIndex, false, note)
-	accountCache.Delete(authIndex)
+	rememberLifecycleState(authID, false, note)
+	accountCache.Delete(authID)
 	return nil
 }
 
 // deleteAuth removes Global exhausted credentials from disk.
-func deleteAuth(authIndex string, sa *storedAuth) error {
+func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	defer mu.Unlock()
@@ -608,8 +608,8 @@ func deleteAuth(authIndex string, sa *storedAuth) error {
 		if err := hostAuthPersistMigrate(name, "", "", raw); err != nil {
 			return err
 		}
-		rememberLifecycleState(authIndex, true, note)
-		accountCache.Delete(authIndex)
+		rememberLifecycleState(authID, true, note)
+		accountCache.Delete(authID)
 		return nil
 	}
 	if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
@@ -625,8 +625,8 @@ func deleteAuth(authIndex string, sa *storedAuth) error {
 			}
 		}
 	}
-	lifecycleState.Delete(authIndex)
-	accountCache.Delete(authIndex)
+	lifecycleState.Delete(authID)
+	accountCache.Delete(authID)
 	return nil
 }
 
@@ -647,28 +647,28 @@ func peerAuthDir() string {
 }
 
 // applyExhaustedPolicy applies disable (CN) or delete (Global).
-func applyExhaustedPolicy(authIndex string, sa *storedAuth, cr *creditsSummary, reason string) error {
+func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	if !lifecycleEnabled() {
 		return nil
 	}
 	action := lifecycleActionFor(accountRegion(sa), cr)
 	switch action {
 	case lifecycleDelete:
-		return deleteAuth(authIndex, sa)
+		return deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
-		return disableAuth(authIndex, sa, cr, reason)
+		return disableAuth(authIndex, authID, sa, cr, reason)
 	default:
 		return nil
 	}
 }
 
 // syncAuthNote writes note without changing disabled state.
-func syncAuthNote(authIndex string, sa *storedAuth, cr *creditsSummary, disabled bool) error {
+func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, disabled bool) error {
 	if sa == nil {
 		return nil
 	}
 	note := displayNote(sa, cr, disabled)
-	if lifecycleStateUnchanged(authIndex, disabled, note) {
+	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
 	mu := checkinLockFor(authIndex)
@@ -684,7 +684,7 @@ func syncAuthNote(authIndex string, sa *storedAuth, cr *creditsSummary, disabled
 		disabled = parseDisabledFromAuthJSON(phys.JSON)
 		note = displayNote(sa, cr, disabled)
 	}
-	if lifecycleStateUnchanged(authIndex, disabled, note) {
+	if lifecycleStateUnchanged(authID, disabled, note) {
 		return nil
 	}
 	raw, err := buildAuthFileJSON(sa, disabled, note, nil)
@@ -694,13 +694,16 @@ func syncAuthNote(authIndex string, sa *storedAuth, cr *creditsSummary, disabled
 	if err := hostAuthPersistMigrate(name, path, legacyPath, raw); err != nil {
 		return err
 	}
-	rememberLifecycleState(authIndex, disabled, note)
+	rememberLifecycleState(authID, disabled, note)
 	return nil
 }
 
 // reconcileOneAccount refreshes credits and applies lifecycle for one auth.
+// authIndex is used for host RPC (host.auth.get), authID (auth.ID) is used
+// for cache keys (accountCache/lifecycleState) so it matches the scheduler's
+// SchedulerAuthCandidate.ID.
 // force ignores short-circuit only for credit fetch (uses force on cache via caller).
-func reconcileOneAccount(authIndex string, force bool) (action lifecycleAction, err error) {
+func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycleAction, err error) {
 	if !lifecycleEnabled() {
 		return lifecycleNone, nil
 	}
@@ -719,7 +722,7 @@ func reconcileOneAccount(authIndex string, force bool) (action lifecycleAction, 
 	// else try cache first.
 	var cr *creditsSummary
 	if !force {
-		if v, ok := accountCache.Load(authIndex); ok {
+		if v, ok := accountCache.Load(authID); ok {
 			if e, ok2 := v.(*accountCacheEntry); ok2 && e.credits != nil && time.Since(e.fetched) < accountCacheTTL {
 				cr = e.credits
 			}
@@ -733,37 +736,37 @@ func reconcileOneAccount(authIndex string, force bool) (action lifecycleAction, 
 		}
 		// Merge into cache without wiping plan/checkin from dashboard fetch.
 		entry := &accountCacheEntry{credits: cr, fetched: time.Now()}
-		if v, ok := accountCache.Load(authIndex); ok {
+		if v, ok := accountCache.Load(authID); ok {
 			if prev, ok2 := v.(*accountCacheEntry); ok2 {
 				entry.plan = prev.plan
 				entry.checkin = prev.checkin
 			}
 		}
-		accountCache.Store(authIndex, entry)
+		accountCache.Store(authID, entry)
 	}
 
 	region := accountRegion(sa)
 	if region == "cn" && disabled {
 		if shouldReenableCN(true, cr) {
-			if err := reenableAuth(authIndex, sa, cr); err != nil {
+			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
 				return lifecycleReenable, err
 			}
 			return lifecycleReenable, nil
 		}
 		// still disabled: refresh note
-		_ = syncAuthNote(authIndex, sa, cr, true)
+		_ = syncAuthNote(authIndex, authID, sa, cr, true)
 		return lifecycleNone, nil
 	}
 
 	act := lifecycleActionFor(region, cr)
 	switch act {
 	case lifecycleDelete:
-		return lifecycleDelete, deleteAuth(authIndex, sa)
+		return lifecycleDelete, deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
-		return lifecycleDisable, disableAuth(authIndex, sa, cr, "耗尽")
+		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽")
 	default:
 		// healthy: keep note fresh (throttled)
-		_ = syncAuthNote(authIndex, sa, cr, false)
+		_ = syncAuthNote(authIndex, authID, sa, cr, false)
 		return lifecycleNone, nil
 	}
 }
@@ -779,7 +782,7 @@ func reconcileAllAccounts(force bool) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(files))
 	for _, f := range files {
-		act, err := reconcileOneAccount(f.AuthIndex, force)
+		act, err := reconcileOneAccount(f.AuthIndex, f.ID, force)
 		row := map[string]any{"auth_index": f.AuthIndex, "action": act.String()}
 		if err != nil {
 			row["error"] = err.Error()
@@ -805,37 +808,46 @@ func reconcileAfterExecutorError(authID string, status int, body string) {
 		return
 	}
 	go func() {
-		idx := resolveAuthIndex(authID)
+		idx, id := resolveAuthIndexAndID(authID)
 		if idx == "" {
 			return
 		}
-		_, _ = reconcileOneAccount(idx, true)
+		_, _ = reconcileOneAccount(idx, id, true)
 	}()
 }
 
-// resolveAuthIndex maps executor AuthID (index, file id, or account UID) to host auth_index.
-func resolveAuthIndex(authID string) string {
+// resolveAuthIndexAndID maps executor AuthID (index, file id, or account UID)
+// to host auth_index AND auth.ID. Returns ("", "") if not found.
+func resolveAuthIndexAndID(authID string) (string, string) {
 	authID = strings.TrimSpace(authID)
 	if authID == "" {
-		return ""
+		return "", ""
 	}
 	// Fast path: already an auth_index the host understands.
 	if _, err := hostAuthGet(authID); err == nil {
-		return authID
+		// Find the matching file entry to get auth.ID.
+		if files, err := hostAuthList(); err == nil {
+			for _, f := range files {
+				if f.AuthIndex == authID {
+					return authID, f.ID
+				}
+			}
+		}
+		return authID, ""
 	}
 	files, err := hostAuthList()
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	// Prefer O(list) name/id match before per-account host.auth.get (A-22).
 	// Multi-account files are workbuddy-<uid>.json; list Name/ID usually carry that.
 	wantName := "workbuddy-" + authID + ".json"
 	for _, f := range files {
 		if f.AuthIndex == authID || f.ID == authID || f.Name == authID {
-			return f.AuthIndex
+			return f.AuthIndex, f.ID
 		}
 		if listEntryMatchesUID(f, authID, wantName) {
-			return f.AuthIndex
+			return f.AuthIndex, f.ID
 		}
 	}
 	// Slow path: only when list metadata lacks uid (rare legacy shapes).
@@ -845,10 +857,10 @@ func resolveAuthIndex(authID string) string {
 			continue
 		}
 		if strings.TrimSpace(sa.Account.UID) == authID {
-			return f.AuthIndex
+			return f.AuthIndex, f.ID
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // reconcileByUID finds workbuddy auth by account UID and applies executor-error lifecycle.
@@ -860,11 +872,11 @@ func reconcileByUID(uid string, status int, body string) {
 	if !isHardCreditError(status, body) {
 		return
 	}
-	idx := resolveAuthIndex(uid)
+	idx, id := resolveAuthIndexAndID(uid)
 	if idx == "" {
 		return
 	}
-	_, _ = reconcileOneAccount(idx, true)
+	_, _ = reconcileOneAccount(idx, id, true)
 }
 
 // invalidateAccountCredits drops cached credits so the next panel/reconcile
@@ -886,11 +898,11 @@ func invalidateAccountCredits(authID, authUID string) {
 	matchedByName := false
 	for _, f := range files {
 		if f.AuthIndex == authID || f.ID == authID || f.Name == authID {
-			accountCache.Delete(f.AuthIndex)
+			accountCache.Delete(f.ID)
 			continue
 		}
 		if listEntryMatchesUID(f, authUID, wantName) {
-			accountCache.Delete(f.AuthIndex)
+			accountCache.Delete(f.ID)
 			matchedByName = true
 		}
 	}
@@ -907,7 +919,7 @@ func invalidateAccountCredits(authID, authUID string) {
 			continue
 		}
 		if strings.TrimSpace(sa.Account.UID) == authUID {
-			accountCache.Delete(f.AuthIndex)
+			accountCache.Delete(f.ID)
 		}
 	}
 }

@@ -87,13 +87,13 @@ const (
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
-	upstreamBaseGlobal = "https://www.workbuddy.ai"
-	clientUA           = "CLI/2.63.2 CodeBuddy/2.63.2"
-	originReferer      = "https://www.codebuddy.cn"
+	upstreamBaseGlobal  = "https://www.workbuddy.ai"
+	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
+	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
 	// Legacy aliases used by CN login defaults / tests.
-	upstreamBase  = upstreamBaseCN
+	upstreamBase         = upstreamBaseCN
 	endpointAuthState    = upstreamBaseCN + "/v2/plugin/auth/state?platform=CLI"
 	endpointLoginAcct    = upstreamBaseCN + "/v2/plugin/login/account?state="
 	endpointAuthToken    = upstreamBaseCN + "/v2/plugin/auth/token?state="
@@ -381,11 +381,11 @@ func wbRegistration() registration {
 			ExecutorOutputFormats: []string{"chat-completions"},
 			ManagementAPI:         true,
 			Scheduler:             true,
-			},
-			}
-			}
+		},
+	}
+}
 
-			func wbModels() []pluginapi.ModelInfo {
+func wbModels() []pluginapi.ModelInfo {
 	return []pluginapi.ModelInfo{
 		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
 		{ID: "glm-5.1", Name: "GLM-5.1", ContextLength: 131072, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -862,18 +862,18 @@ func reportUsageToCPAMP(alias, model, authID string, started time.Time, detail u
 		failBody = truncate(redactSecrets(errBody), 512)
 	}
 	payload := map[string]any{
-		"timestamp":    ts.UTC().Format(time.RFC3339Nano),
-		"latency_ms":   latencyMs,
-		"source":       "workbuddy",
-		"auth_index":   strings.TrimSpace(authID),
-		"provider":     providerName,
-		"model":        model,
-		"alias":        alias,
-		"endpoint":     "POST /v1/chat/completions",
-		"auth_type":    "oauth",
+		"timestamp":     ts.UTC().Format(time.RFC3339Nano),
+		"latency_ms":    latencyMs,
+		"source":        "workbuddy",
+		"auth_index":    strings.TrimSpace(authID),
+		"provider":      providerName,
+		"model":         model,
+		"alias":         alias,
+		"endpoint":      "POST /v1/chat/completions",
+		"auth_type":     "oauth",
 		"executor_type": "workbuddy",
-		"generate":     true,
-		"failed":       failed,
+		"generate":      true,
+		"failed":        failed,
 		"tokens": map[string]any{
 			"input_tokens":          detail.InputTokens,
 			"output_tokens":         detail.OutputTokens,
@@ -1070,7 +1070,6 @@ func filterExcludedModels(models []pluginapi.ModelInfo, host pluginapi.HostConfi
 	}
 	return out
 }
-
 
 // hostAuthListFiles lists all auth files known to the host.
 func hostAuthListFiles() ([]pluginapi.HostAuthFileEntry, error) {
@@ -1519,7 +1518,7 @@ func preserveExpiry(newExpiry, oldExpiry int64) int64 {
 func toAuthDataForRefresh(sa *storedAuth) pluginapi.AuthData {
 	ad := toAuthDataOpts(sa, nil, false)
 	ad.FileName = "" // let host backfill original
-	ad.ID = ""      // let host compute from path (prevents ID mismatch dupes)
+	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad
 }
 
