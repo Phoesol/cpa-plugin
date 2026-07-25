@@ -454,8 +454,8 @@ type lifecycleStateEntry struct {
 	at       time.Time
 }
 
-func lifecycleStateUnchanged(authIndex string, disabled bool, note string) bool {
-	v, ok := lifecycleState.Load(authIndex)
+func lifecycleStateUnchanged(authID string, disabled bool, note string) bool {
+	v, ok := lifecycleState.Load(authID)
 	if !ok {
 		return false
 	}
@@ -466,8 +466,8 @@ func lifecycleStateUnchanged(authIndex string, disabled bool, note string) bool 
 	return time.Since(e.at) < lifecycleSaveTTL
 }
 
-func rememberLifecycleState(authIndex string, disabled bool, note string) {
-	lifecycleState.Store(authIndex, &lifecycleStateEntry{disabled: disabled, note: note, at: time.Now()})
+func rememberLifecycleState(authID string, disabled bool, note string) {
+	lifecycleState.Store(authID, &lifecycleStateEntry{disabled: disabled, note: note, at: time.Now()})
 }
 
 // pruneLifecycleState removes entries for auth indices that no longer exist
@@ -883,8 +883,18 @@ func reconcileByUID(uid string, status int, body string) {
 // fetch hits upstream. Call after a successful chat completion — otherwise a
 // short TTL cache makes "used" look frozen while the user is burning credits.
 func invalidateAccountCredits(authID, authUID string) {
+	// Invalidate credits only — keep plan/checkin in cache.
+	invalidateCredits := func(id string) {
+		if v, ok := accountCache.Load(id); ok {
+			if e, ok2 := v.(*accountCacheEntry); ok2 {
+				e.credits = nil
+				e.fetched = time.Now()
+				accountCache.Store(id, e)
+			}
+		}
+	}
 	if authID != "" {
-		accountCache.Delete(authID)
+		invalidateCredits(authID)
 	}
 	if authUID == "" || authUID == authID {
 		return
@@ -898,11 +908,11 @@ func invalidateAccountCredits(authID, authUID string) {
 	matchedByName := false
 	for _, f := range files {
 		if f.AuthIndex == authID || f.ID == authID || f.Name == authID {
-			accountCache.Delete(f.ID)
+			invalidateCredits(f.ID)
 			continue
 		}
 		if listEntryMatchesUID(f, authUID, wantName) {
-			accountCache.Delete(f.ID)
+			invalidateCredits(f.ID)
 			matchedByName = true
 		}
 	}
@@ -919,7 +929,7 @@ func invalidateAccountCredits(authID, authUID string) {
 			continue
 		}
 		if strings.TrimSpace(sa.Account.UID) == authUID {
-			accountCache.Delete(f.ID)
+			invalidateCredits(f.ID)
 		}
 	}
 }

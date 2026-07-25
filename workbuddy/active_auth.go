@@ -65,23 +65,23 @@ func pickActiveAuth(candidates []activeAuthCandidate) string {
 	}
 
 	cur := getActiveAuthID()
-	// Keep current selection if it's still a live candidate AND not exhausted.
+	// Keep current selection if it's still a live candidate AND not disabled/exhausted.
 	if cur != "" {
-		if c, ok := byID[cur]; ok && !c.Exhausted {
+		if c, ok := byID[cur]; ok && !c.Disabled && !c.Exhausted {
 			return cur
 		}
 	}
 
-	// Selection is gone or exhausted — pick next non-exhausted, else first.
+	// Selection is gone, disabled or exhausted — pick next non-disabled non-exhausted, else first.
 	var next string
 	for _, c := range candidates {
-		if !c.Exhausted {
+		if !c.Disabled && !c.Exhausted {
 			next = c.ID
 			break
 		}
 	}
 	if next == "" {
-		// All exhausted — keep current if still alive, else first candidate.
+		// All exhausted or disabled — keep current if still alive, else first candidate.
 		if cur != "" {
 			if _, ok := byID[cur]; ok {
 				return cur
