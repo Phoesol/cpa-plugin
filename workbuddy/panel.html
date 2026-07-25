@@ -318,11 +318,11 @@ function progressHTML(c){
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
-  const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.packages&&cr.packages.length)));
+  const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
   const region=a.region||"cn";
   const isGlobal=region==="global";
   const disabled=!!a.disabled;
-  const selected=!!a.selected||(a.auth_id&&a.auth_id===activeAuthId);
+  const selected=!!a.selected;
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
   // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
   let actionHTML;

@@ -1227,12 +1227,13 @@ func runAutoCheckin() {
 			}
 			if isGlobalDomain(sa.Auth.Domain) {
 				// Global: never check-in or auto-claim trial. Lifecycle only.
-				// Invalidate cache (merge, don't delete — keep plan/checkin).
+				// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
 				if v, ok := accountCache.Load(f.ID); ok {
 					if e, ok2 := v.(*accountCacheEntry); ok2 {
-						e.credits = nil
-						e.fetched = time.Now()
-						accountCache.Store(f.ID, e)
+						fresh := *e
+						fresh.credits = nil
+						fresh.fetched = time.Now()
+						accountCache.Store(f.ID, &fresh)
 					}
 				}
 				if lifecycleEnabled() {
@@ -1245,9 +1246,18 @@ func runAutoCheckin() {
 			if err == nil && ci.Active && !ci.TodayCheckedIn {
 				_, _ = performCheckinCall(sa)
 			}
-			// Refresh cache with latest checkin status.
+			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
 			if ci, _ := fetchCheckinStatus(sa); ci != nil {
-				accountCache.Store(f.ID, &accountCacheEntry{checkin: ci, fetched: time.Now()})
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(f.ID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(f.ID, entry)
 			}
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
@@ -1472,7 +1482,16 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			already++
 			// Keep checkin in cache so light-load dashboard shows 已签到.
 			if ci2, _ := fetchCheckinStatus(cr.sa); ci2 != nil {
-				accountCache.Store(cr.f.ID, &accountCacheEntry{checkin: ci2, fetched: time.Now()})
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(cr.f.ID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci2, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(cr.f.ID, entry)
 			}
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(cr.f.AuthIndex, cr.f.ID, true)
@@ -1552,7 +1571,16 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			// Keep checkin in cache so light-load dashboard shows 已签到.
 			// Re-fetch checkin status after successful checkin call.
 			if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-				accountCache.Store(c.authID, &accountCacheEntry{checkin: ci2, fetched: time.Now()})
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(c.authID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci2, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(c.authID, entry)
 			} else {
 				// Fallback: keep existing cache (may be stale), don't delete.
 				if _, ok := accountCache.Load(c.authID); !ok {
@@ -1649,6 +1677,7 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 
 // pruneCheckinLocks removes lock entries for auth indices that no longer
 // exist in hostAuthList. Call after dashboard prune.
+// Lock keys are auth_index (used for host RPC), so live map needs auth_index too.
 func pruneCheckinLocks() {
 	files, err := hostAuthList()
 	if err != nil {
@@ -1657,6 +1686,7 @@ func pruneCheckinLocks() {
 	live := make(map[string]struct{}, len(files))
 	for _, f := range files {
 		live[f.ID] = struct{}{}
+		live[f.AuthIndex] = struct{}{} // checkinLockFor uses auth_index as key
 	}
 	checkinLocks.Range(func(key, _ any) bool {
 		idx, _ := key.(string)
@@ -1784,12 +1814,13 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 				out[k] = v
 			}
 		}
-		// Invalidate credits cache (merge, don't delete — keep plan/checkin).
+		// Invalidate credits cache (copy entry, set credits=nil, keep plan/checkin).
 		if v, ok := accountCache.Load(f.ID); ok {
 			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				e.credits = nil
-				e.fetched = time.Now()
-				accountCache.Store(f.ID, e)
+				fresh := *e
+				fresh.credits = nil
+				fresh.fetched = time.Now()
+				accountCache.Store(f.ID, &fresh)
 			}
 		}
 		if lifecycleEnabled() {
@@ -1899,7 +1930,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				if prev != nil {
 					ci = prev.checkin
 				}
-				plan := acct["plan"].(string)
+				plan, _ := acct["plan"].(string)
 				accountCache.Store(f.ID, &accountCacheEntry{
 					checkin: ci, credits: cr, plan: plan, fetched: now,
 				})
