@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.29
+
+### Fixed
+- 修复签到后按钮不变"已签到"、套餐标记丢失的问题
+  根因：handleManualCheckin/runAutoCheckin/handleClaimTrial 在签到/领取成功后
+  accountCache.Delete(f.ID) 把 cache 清了，light load 时 checkin/plan 是 nil。
+  handleCreditsQuery 的 cache merge 逻辑从 prev.plan（空）取值而不是用刚获取的
+  fetchPaymentType(sa) 结果，导致 plan 在 light load 后丢失。
+  修复：签到/领取成功后把 checkinSummary 存回 cache 而不是删除；
+  handleCreditsQuery cache merge 用刚获取的 plan；runAutoCheckin/handleClaimTrial
+  改为 invalidate credits（置 nil）而不是删除整个 cache entry。
+
 ## 0.6.28
 
 ### Fixed

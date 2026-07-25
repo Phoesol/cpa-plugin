@@ -1227,7 +1227,14 @@ func runAutoCheckin() {
 			}
 			if isGlobalDomain(sa.Auth.Domain) {
 				// Global: never check-in or auto-claim trial. Lifecycle only.
-				accountCache.Delete(f.ID)
+				// Invalidate cache (merge, don't delete — keep plan/checkin).
+				if v, ok := accountCache.Load(f.ID); ok {
+					if e, ok2 := v.(*accountCacheEntry); ok2 {
+						e.credits = nil
+						e.fetched = time.Now()
+						accountCache.Store(f.ID, e)
+					}
+				}
 				if lifecycleEnabled() {
 					_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 				}
@@ -1238,7 +1245,10 @@ func runAutoCheckin() {
 			if err == nil && ci.Active && !ci.TodayCheckedIn {
 				_, _ = performCheckinCall(sa)
 			}
-			accountCache.Delete(f.ID)
+			// Refresh cache with latest checkin status.
+			if ci, _ := fetchCheckinStatus(sa); ci != nil {
+				accountCache.Store(f.ID, &accountCacheEntry{checkin: ci, fetched: time.Now()})
+			}
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 			}
@@ -1460,8 +1470,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			}
 		case "already":
 			already++
-			// Light cache refresh path for reenable after prior disable.
-			accountCache.Delete(cr.f.ID)
+			// Keep checkin in cache so light-load dashboard shows 已签到.
+			if ci2, _ := fetchCheckinStatus(cr.sa); ci2 != nil {
+				accountCache.Store(cr.f.ID, &accountCacheEntry{checkin: ci2, fetched: time.Now()})
+			}
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(cr.f.AuthIndex, cr.f.ID, true)
 			}
@@ -1507,7 +1519,8 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					"success": true, "skipped": true, "reason": "already",
 					"message": "already checked in today",
 				}}
-				accountCache.Delete(c.authID)
+				// Keep checkin in cache so light-load dashboard shows 已签到.
+				accountCache.Store(c.authID, &accountCacheEntry{checkin: ci, fetched: time.Now()})
 				if lifecycleEnabled() {
 					_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
 				}
@@ -1536,7 +1549,19 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					out["success"] = true
 				}
 			}
-			accountCache.Delete(c.authID)
+			// Keep checkin in cache so light-load dashboard shows 已签到.
+			// Re-fetch checkin status after successful checkin call.
+			if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+				accountCache.Store(c.authID, &accountCacheEntry{checkin: ci2, fetched: time.Now()})
+			} else {
+				// Fallback: keep existing cache (may be stale), don't delete.
+				if _, ok := accountCache.Load(c.authID); !ok {
+					accountCache.Store(c.authID, &accountCacheEntry{
+						checkin: &checkinSummary{TodayCheckedIn: true},
+						fetched: time.Now(),
+					})
+				}
+			}
 			mu.Unlock()
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
@@ -1759,7 +1784,14 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 				out[k] = v
 			}
 		}
-		accountCache.Delete(f.ID) // refresh cache
+		// Invalidate credits cache (merge, don't delete — keep plan/checkin).
+		if v, ok := accountCache.Load(f.ID); ok {
+			if e, ok2 := v.(*accountCacheEntry); ok2 {
+				e.credits = nil
+				e.fetched = time.Now()
+				accountCache.Store(f.ID, e)
+			}
+		}
 		if lifecycleEnabled() {
 			_, _ = reconcileOneAccount(authIndex, f.ID, true)
 		}
@@ -1858,17 +1890,16 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				if cr != nil {
 					cr.FetchedAt = now.UTC().Format(time.RFC3339)
 				}
-				// Merge into existing cache entry (keep plan/checkin if present).
+				// Merge into existing cache entry (keep checkin if present).
 				var prev *accountCacheEntry
 				if v, ok := accountCache.Load(f.ID); ok {
 					prev, _ = v.(*accountCacheEntry)
 				}
-				var plan string
 				var ci *checkinSummary
 				if prev != nil {
-					plan = prev.plan
 					ci = prev.checkin
 				}
+				plan := acct["plan"].(string)
 				accountCache.Store(f.ID, &accountCacheEntry{
 					checkin: ci, credits: cr, plan: plan, fetched: now,
 				})
