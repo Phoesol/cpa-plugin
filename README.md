@@ -11,7 +11,7 @@
 
 ## 多架构 Release
 
-每个版本 GitHub Release 提供 CPA 插件商店标准产物（两个插件同版本同矩阵）：
+每个插件独立版本发 Release（tag `<id>-v*`），产物为 CPA 插件商店标准格式：
 
 ```text
 <id>_<version>_linux_amd64.zip      # zip 根目录: <id>.so

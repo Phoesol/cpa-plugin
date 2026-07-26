@@ -1,17 +1,12 @@
 # Multi-arch CPA plugin build & release (workbuddy + qoderwork).
+# Each plugin versions INDEPENDENTLY:
+#   - tag 'workbuddy-v*'  → release workbuddy at that version
+#   - tag 'qoderwork-v*'  → release qoderwork at that version
+#   - workflow_dispatch   → pick plugin + version manually
+#   - plain push/PR       → CI builds for both (artifacts only, no release)
+#
 # Asset naming matches CLIProxyAPI pluginstore ArchiveName():
-#   <id>_<version>_<goos>_<goarch>.zip
-# Zip root must contain: <id>.so | <id>.dylib | <id>.dll
-# Plus: checksums.txt
-#
-# Platforms (aligned with official CPA plugins):
-#   linux/amd64, linux/arm64
-#   darwin/amd64, darwin/arm64
-#   windows/amd64, windows/arm64 (via go-cross)
-#   freebsd/amd64 (via go-cross)
-#
-# Release trigger: tag 'v*' (builds BOTH plugins at that version)
-# or workflow_dispatch with explicit version.
+#   <id>_<version>_<goos>_<goarch>.zip   (zip root: <id>.so|.dylib|.dll)
 
 name: Build
 
@@ -19,16 +14,25 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["workbuddy-v*", "qoderwork-v*"]
   workflow_dispatch:
     inputs:
+      plugin:
+        description: "Plugin to release"
+        required: true
+        type: choice
+        options: [workbuddy, qoderwork]
       version:
-        description: "Version without v (empty = per-plugin VERSION file or tag)"
+        description: "Version without v (empty = plugin's VERSION file)"
         required: false
         default: ""
 
 permissions:
   contents: write
+
+env:
+  # Which plugin this run releases (empty = CI-only, build both).
+  RELEASE_PLUGIN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.plugin || (startsWith(github.ref, 'refs/tags/workbuddy-v') && 'workbuddy' || startsWith(github.ref, 'refs/tags/qoderwork-v') && 'qoderwork' || '') }}
 
 jobs:
   test:
@@ -65,7 +69,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # workbuddy
+          # workbuddy native
           - id: workbuddy
             goos: linux
             goarch: amd64
@@ -91,7 +95,7 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
-          # qoderwork
+          # qoderwork native
           - id: qoderwork
             goos: linux
             goarch: amd64
@@ -132,21 +136,24 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
+          PLUGIN="${{ matrix.id }}"
+          # Version resolution: tag of this plugin > dispatch input > VERSION file
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == ${PLUGIN}-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#${PLUGIN}-v}"
+          elif [ -n "${{ github.event.inputs.version }}" ] && [ "${{ github.event.inputs.plugin }}" == "${PLUGIN}" ]; then
             VERSION="${{ github.event.inputs.version }}"
-          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="$(tr -d ' \n\r' < ${{ matrix.id }}/VERSION)"
+            VERSION="$(tr -d ' \n\r' < ${PLUGIN}/VERSION)"
+            # CI builds (non-release) get a +ci suffix to avoid clashing with real versions
             if [[ "${GITHUB_REF_TYPE:-}" != "tag" && "${{ github.event_name }}" != "workflow_dispatch" ]]; then
               VERSION="${VERSION}+ci.${GITHUB_RUN_NUMBER}"
             fi
           fi
           CLEAN_VERSION="${VERSION%%+*}"
           echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
-          echo "LIB_NAME=${{ matrix.id }}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
-          echo "ARCHIVE_NAME=${{ matrix.id }}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
-          echo "version=${CLEAN_VERSION} archive=${{ matrix.id }}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          echo "LIB_NAME=${PLUGIN}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=${PLUGIN}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
+          echo "version=${CLEAN_VERSION} archive=${PLUGIN}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
 
       - name: Build shared library
         run: |
@@ -221,22 +228,20 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
+          PLUGIN="${{ matrix.id }}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == ${PLUGIN}-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#${PLUGIN}-v}"
+          elif [ -n "${{ github.event.inputs.version }}" ] && [ "${{ github.event.inputs.plugin }}" == "${PLUGIN}" ]; then
             VERSION="${{ github.event.inputs.version }}"
-          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="$(tr -d ' \n\r' < ${{ matrix.id }}/VERSION)"
-            VERSION="${VERSION%%+*}"
+            VERSION="$(tr -d ' \n\r' < ${PLUGIN}/VERSION)"
           fi
           CLEAN_VERSION="${VERSION%%+*}"
-          GOOS="${{ matrix.target }}"
-          GOARCH_PART="${GOOS#*-}"
-          GOOS_PART="${GOOS%-*}"
+          GOOS_PART="${{ matrix.target }}"
           echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "ARCHIVE_NAME=${{ matrix.id }}_${CLEAN_VERSION}_${GOOS_PART}_${GOARCH_PART}.zip" >> "${GITHUB_ENV}"
-          echo "LIB_NAME=${{ matrix.id }}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=${PLUGIN}_${CLEAN_VERSION}_${GOOS_PART%-*}_${GOOS_PART#*-}.zip" >> "${GITHUB_ENV}"
+          echo "LIB_NAME=${PLUGIN}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
 
       - name: Build cross shared library
         timeout-minutes: 45
@@ -282,8 +287,12 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
+    name: Release (${{ env.RELEASE_PLUGIN }})
+    # Only for a tag of a specific plugin, or dispatch with a version.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
+      startsWith(github.ref, 'refs/tags/workbuddy-v') ||
+      startsWith(github.ref, 'refs/tags/qoderwork-v')
     needs:
       - build
       - build-cross
@@ -293,17 +302,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve version
+      - name: Resolve plugin + version
         id: meta
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            P="${{ github.event.inputs.plugin }}"
             V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF_NAME}" == workbuddy-v* ]]; then
+            P="workbuddy"; V="${GITHUB_REF_NAME#workbuddy-v}"
           else
-            V="${GITHUB_REF_NAME#v}"
+            P="qoderwork"; V="${GITHUB_REF_NAME#qoderwork-v}"
           fi
+          echo "plugin=$P" >> "$GITHUB_OUTPUT"
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "tag=${P}-v${V}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $P v$V"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -311,37 +325,38 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Assemble checksums.txt
+      - name: Assemble checksums.txt (this plugin only)
+        env:
+          PLUGIN: ${{ steps.meta.outputs.plugin }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
-          ls -la dist/
-          if ls dist/*.sha256 >/dev/null 2>&1; then
-            sort dist/*.sha256 > dist/checksums.txt
+          mkdir -p out
+          mv dist/${PLUGIN}_${VERSION}_*.zip* out/ 2>/dev/null || true
+          ls -la out/
+          if ls out/*.sha256 >/dev/null 2>&1; then
+            sort out/*.sha256 > out/checksums.txt
           else
-            (cd dist && sha256sum *.zip > checksums.txt)
+            (cd out && sha256sum *.zip > checksums.txt)
           fi
-          cat dist/checksums.txt
-          V="${{ steps.meta.outputs.version }}"
-          for id in workbuddy qoderwork; do
-            test -f "dist/${id}_${V}_linux_amd64.zip"
-            test -f "dist/${id}_${V}_linux_arm64.zip"
-            test -f "dist/${id}_${V}_darwin_amd64.zip"
-            test -f "dist/${id}_${V}_darwin_arm64.zip"
-            test -f "dist/${id}_${V}_windows_amd64.zip"
-            test -f "dist/${id}_${V}_windows_arm64.zip"
+          cat out/checksums.txt
+          for t in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
+            test -f "out/${PLUGIN}_${VERSION}_${t}.zip" || { echo "missing ${PLUGIN}_${VERSION}_${t}.zip"; exit 1; }
           done
 
-      - name: Sync registry.json version
+      - name: Sync registry.json version (this plugin only)
         env:
+          PLUGIN: ${{ steps.meta.outputs.plugin }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib
-          v = os.environ["VERSION"]
+          pid, v = os.environ["PLUGIN"], os.environ["VERSION"]
           p = pathlib.Path("registry.json")
           data = json.loads(p.read_text())
           for plug in data.get("plugins", []):
-              plug["version"] = v
+              if plug.get("id") == pid:
+                  plug["version"] = v
           p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
           print(p.read_text())
           PY
@@ -352,6 +367,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.meta.outputs.tag }}
+          PLUGIN: ${{ steps.meta.outputs.plugin }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
@@ -359,52 +375,44 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-              git tag -a "${TAG}" -m "Release ${TAG}"
+              git tag -a "${TAG}" -m "Release ${PLUGIN} ${TAG}"
               git push origin "${TAG}"
             fi
           fi
           NOTES=$(cat <<EOF
-          ## CPA plugins v${VERSION} (workbuddy + qoderwork)
+          ## ${PLUGIN} CPA plugin v${VERSION}
 
           Multi-arch builds for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin store (\`github-release\` install type).
 
           ### Assets (pluginstore \`ArchiveName(id, version, goos, goarch)\`)
-          Each zip contains the bare library at its root:
-          \`<id>.so\` (linux/freebsd), \`<id>.dylib\` (darwin), \`<id>.dll\` (windows).
+          | File | Contents |
+          |---|---|
+          | \`${PLUGIN}_${VERSION}_linux_amd64.zip\` | \`${PLUGIN}.so\` |
+          | \`${PLUGIN}_${VERSION}_linux_arm64.zip\` | \`${PLUGIN}.so\` |
+          | \`${PLUGIN}_${VERSION}_darwin_amd64.zip\` | \`${PLUGIN}.dylib\` |
+          | \`${PLUGIN}_${VERSION}_darwin_arm64.zip\` | \`${PLUGIN}.dylib\` |
+          | \`${PLUGIN}_${VERSION}_windows_amd64.zip\` | \`${PLUGIN}.dll\` |
+          | \`${PLUGIN}_${VERSION}_windows_arm64.zip\` | \`${PLUGIN}.dll\` |
+          | \`${PLUGIN}_${VERSION}_freebsd_amd64.zip\` | \`${PLUGIN}.so\` |
+          | \`checksums.txt\` | SHA256 of zips |
 
-          Platforms per plugin: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
-          windows/amd64, windows/arm64, freebsd/amd64, plus \`checksums.txt\`.
-
-          ### Manual install (example: qoderwork linux/amd64)
+          ### Manual install (linux/amd64 example)
           \`\`\`bash
-          unzip qoderwork_${VERSION}_linux_amd64.zip
-          cp qoderwork.so /path/to/cliproxyapi/plugins/qoderwork.so
-          \`\`\`
-
-          \`\`\`yaml
-          plugins:
-            enabled: true
-            dir: "plugins"
-            configs:
-              workbuddy:
-                enabled: true
-              qoderwork:
-                enabled: true
+          unzip ${PLUGIN}_${VERSION}_linux_amd64.zip
+          cp ${PLUGIN}.so /path/to/cliproxyapi/plugins/${PLUGIN}.so
           \`\`\`
 
           ### Remote update (custom plugin source)
-          Add to CPA plugin store sources:
           \`\`\`
           https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
           \`\`\`
-          Then install / update **workbuddy** and **qoderwork** from the store UI.
           EOF
           )
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" dist/*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${TAG}" out/${PLUGIN}_*.zip out/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${TAG}" dist/*.zip dist/checksums.txt \
+            gh release create "${TAG}" out/${PLUGIN}_*.zip out/checksums.txt \
               --repo "${GITHUB_REPOSITORY}" \
-              --title "CPA plugins ${TAG}" \
+              --title "${PLUGIN} v${VERSION}" \
               --notes "${NOTES}"
           fi
