@@ -60,6 +60,7 @@ func configure(raw []byte) {
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
+	nextKeepaliveAuto := true
 	nextMgmtKey := ""
 
 	cfgURL, cfgKey := "", ""
@@ -98,6 +99,11 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
 					nextMgmtKey = strings.Trim(v, "\"'")
 				}
+				if strings.HasPrefix(line, "token_keepalive:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
+					v = strings.Trim(v, "\"'")
+					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+				}
 			}
 		}
 	}
@@ -114,6 +120,10 @@ func configure(raw []byte) {
 	schedulerModeMu.Lock()
 	schedulerMode = nextSchedulerMode
 	schedulerModeMu.Unlock()
+
+	keepaliveAutoMu.Lock()
+	keepaliveAuto = nextKeepaliveAuto
+	keepaliveAutoMu.Unlock()
 
 	// management key: config_yaml > env > keep existing. Empty stays empty
 	// (plugin-layer auth disabled, host middleware still guards).

@@ -35,7 +35,12 @@ func ensureScheduler() {
 
 func nextCheckinTime(now time.Time) time.Time {
 	var earliest time.Time
-	for _, h := range checkinHours {
+	// Consider both checkin and keepalive schedules so the timer wakes up for
+	// whichever fires first (e.g. 21:00 checkin vs 22:00 keepalive → 21:00 wins,
+	// then 22:00 keepalive fires on the next tick).
+	hours := append([]int{}, checkinHours...)
+	hours = append(hours, keepaliveHours...)
+	for _, h := range hours {
 		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
 		if !t.After(now) {
 			t = t.Add(24 * time.Hour) // slot already passed today → tomorrow
@@ -57,6 +62,12 @@ func schedulerLoop(stop chan struct{}) {
 			return
 		case <-timer.C:
 			runAutoCheckin()
+			// Fire keepalive if the current tick falls within its scheduled
+			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
+			// the previous checkin tick was 21:00).
+			if shouldRunKeepaliveNow(time.Now()) {
+				runTokenKeepalive()
+			}
 		}
 	}
 }
