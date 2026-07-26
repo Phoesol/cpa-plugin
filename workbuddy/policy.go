@@ -11,7 +11,6 @@ import (
 	"sync"
 )
 
-
 // lifecycleAction is the policy decision for one account.
 type lifecycleAction int
 
@@ -40,7 +39,6 @@ var (
 	lifecycleAuto   = true
 	lifecycleAutoMu sync.RWMutex
 )
-
 
 func lifecycleEnabled() bool {
 	lifecycleAutoMu.RLock()
@@ -186,4 +184,3 @@ func labelForAuth(sa *storedAuth) string {
 	}
 	return base + " [" + tag + "]"
 }
-

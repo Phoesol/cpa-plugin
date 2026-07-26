@@ -15,6 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
 var (
 	lifecycleState   sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
 	lifecycleSaveTTL = 30 * time.Second

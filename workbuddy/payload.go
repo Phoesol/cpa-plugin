@@ -174,7 +174,6 @@ func rewriteModelInPlace(obj map[string]any, upstreamModel string) bool {
 	return true
 }
 
-
 func forceStreamBody(payload, original []byte) []byte {
 	src := payload
 	if len(src) == 0 {
@@ -392,7 +391,6 @@ func rewriteContentField(msg map[string]any) bool {
 	return false
 }
 
-
 func sanitizeBlockedTemplates(s string) string {
 	s = strings.ReplaceAll(s,
 		"You are Claude Code, Anthropic's official CLI for Claude.",
@@ -441,7 +439,6 @@ func rewriteModelInBody(body []byte, upstreamModel string) []byte {
 	return out
 }
 
-
 func isEmptyValue(v any) bool {
 	switch x := v.(type) {
 	case nil:
@@ -466,4 +463,3 @@ func isEmptyValue(v any) bool {
 	}
 	return false
 }
-

@@ -65,7 +65,6 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 	return env.Data, resp.StatusCode, nil
 }
 
-
 func handleStartLogin(raw []byte) ([]byte, error) {
 	client := newLoginClient()
 	data, _, err := doJSON(client, http.MethodPost, endpointAuthState, nil, bytes.NewReader([]byte("{}")))
@@ -86,7 +85,6 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 		Metadata:  map[string]any{"logo": pluginLogoURL},
 	})
 }
-
 
 func handlePollLogin(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthLoginPollRequest
@@ -164,7 +162,6 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	})
 }
 
-
 func handleRefreshAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthRefreshRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -237,4 +234,3 @@ func toAuthDataForRefresh(sa *storedAuth) pluginapi.AuthData {
 	ad.ID = ""       // let host compute from path (prevents ID mismatch dupes)
 	return ad
 }
-

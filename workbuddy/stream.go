@@ -33,7 +33,6 @@ func streamEmit(streamID string, payload []byte) error {
 	return err
 }
 
-
 func streamEmitError(streamID, message string) {
 	if streamID == "" {
 		return
@@ -43,7 +42,6 @@ func streamEmitError(streamID, message string) {
 	_ = streamEmit(streamID, errJSON)
 }
 
-
 func streamClose(streamID string) {
 	if streamID == "" {
 		return
@@ -51,7 +49,6 @@ func streamClose(streamID string) {
 	body, _ := json.Marshal(map[string]any{"stream_id": streamID})
 	_, _ = hostCall(pluginabi.MethodHostStreamClose, body)
 }
-
 
 func streamHeaders() http.Header {
 	h := http.Header{}
@@ -431,7 +428,6 @@ func mergeToolCallDelta(merged, delta map[string]any) {
 	}
 }
 
-
 func stripDataPrefix(s string) string {
 	s = strings.TrimSpace(s)
 	for strings.HasPrefix(s, "data:") {
@@ -439,7 +435,6 @@ func stripDataPrefix(s string) string {
 	}
 	return s
 }
-
 
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
@@ -449,4 +444,3 @@ func firstNonEmpty(vals ...string) string {
 	}
 	return ""
 }
-

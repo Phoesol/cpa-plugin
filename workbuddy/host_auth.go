@@ -17,7 +17,6 @@ type rpcHostAuthListResponse struct {
 	Files []pluginapi.HostAuthFileEntry `json:"files"`
 }
 
-
 type rpcHostAuthGetResponse struct {
 	AuthIndex string          `json:"auth_index"`
 	Name      string          `json:"name"`
@@ -70,4 +69,3 @@ func hostAuthGetBundle(authIndex string) (*storedAuth, *hostAuthPhysical, error)
 	}
 	return sa, phys, nil
 }
-

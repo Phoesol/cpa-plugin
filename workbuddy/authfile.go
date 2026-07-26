@@ -296,4 +296,3 @@ func deleteAuthFileInDir(path, dir string) error {
 }
 
 // hostAuthGetFull returns physical JSON, path, and name for an auth index.
-

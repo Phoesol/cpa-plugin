@@ -77,7 +77,6 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 	}
 }
 
-
 func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		Enabled *bool `json:"enabled"`
@@ -282,4 +281,3 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 	}
 	return map[string]any{"accounts": out}
 }
-

@@ -77,7 +77,6 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 	}
 }
 
-
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
 	data, err := billingCallOnce(sa, path, body)
 	for _, d := range billingRetryDelays {
@@ -99,7 +98,6 @@ func isTransientBillingErr(err error) bool {
 	msg := err.Error()
 	return strings.HasPrefix(msg, "http 5") || strings.HasPrefix(msg, "http=5") || strings.Contains(msg, "status 5")
 }
-
 
 func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, error) {
 	var reader *bytes.Reader
@@ -139,7 +137,6 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	}
 	return env.Data, nil
 }
-
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 	var data json.RawMessage
@@ -253,7 +250,6 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
-
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	now := time.Now()
 	// Status 0=active, 3=exhausted-but-still-listed. PageSize 100 covers the
@@ -330,7 +326,6 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	return sum, nil
 }
 
-
 func fetchPaymentType(sa *storedAuth) string {
 	data, err := billingCall(sa, "/v2/billing/meter/get-payment-type", nil)
 	if err != nil {
@@ -345,7 +340,6 @@ func fetchPaymentType(sa *storedAuth) string {
 	}
 	return ""
 }
-
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
@@ -438,7 +432,6 @@ func isCreditsExhausted(cr *creditsSummary) bool {
 	return len(cr.Packages) > 0
 }
 
-
 func jsonBool(m map[string]any, keys ...string) bool {
 	for _, k := range keys {
 		if v, ok := m[k]; ok {
@@ -454,7 +447,6 @@ func jsonBool(m map[string]any, keys ...string) bool {
 	}
 	return false
 }
-
 
 func jsonI64(m map[string]any, keys ...string) int64 {
 	for _, k := range keys {
@@ -474,7 +466,6 @@ func jsonI64(m map[string]any, keys ...string) int64 {
 	return 0
 }
 
-
 func jsonStr(m map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if s, ok := m[k].(string); ok {
@@ -483,4 +474,3 @@ func jsonStr(m map[string]any, keys ...string) string {
 	}
 	return ""
 }
-

@@ -16,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-
 func wbModels() []pluginapi.ModelInfo {
 	return []pluginapi.ModelInfo{
 		{ID: "glm-5.2", Name: "GLM-5.2", ContextLength: 1000000, MaxCompletionTokens: 8192, OwnedBy: providerName, SupportedGenerationMethods: []string{"chat"}},
@@ -32,7 +31,6 @@ func wbModels() []pluginapi.ModelInfo {
 	}
 }
 
-
 func cachedDynamicModels() ([]pluginapi.ModelInfo, bool) {
 	dynamicModelsCache.RLock()
 	defer dynamicModelsCache.RUnlock()
@@ -42,14 +40,12 @@ func cachedDynamicModels() ([]pluginapi.ModelInfo, bool) {
 	return nil, false
 }
 
-
 func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Lock()
 	dynamicModelsCache.models = models
 	dynamicModelsCache.fetched = time.Now()
 	dynamicModelsCache.Unlock()
 }
-
 
 func fetchDynamicModels() []pluginapi.ModelInfo {
 	if models, ok := cachedDynamicModels(); ok {
@@ -80,7 +76,6 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 	}
 	return models
 }
-
 
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 	if models, ok := cachedDynamicModels(); ok {
@@ -278,7 +273,6 @@ func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
 	return out, nil
 }
 
-
 func cacheModelAliases(host pluginapi.HostConfigSummary) {
 	entries := host.OAuthModelAlias[providerName]
 	if len(entries) == 0 {
@@ -425,7 +419,6 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
 
-
 func handleModelForAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -440,4 +433,3 @@ func handleModelForAuth(raw []byte) ([]byte, error) {
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
-

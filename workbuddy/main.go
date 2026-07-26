@@ -361,6 +361,7 @@ func wbRegistration() registration {
 		},
 	}
 }
+
 // dynamicModelsCacheTTL bounds how long a fetched model list is reused.
 // model.static / model.for_auth are re-invoked by CPA on every config reload
 // and on each models query; without caching, every reload fans out to one
@@ -372,6 +373,7 @@ var dynamicModelsCache struct {
 	models  []pluginapi.ModelInfo
 	fetched time.Time
 }
+
 //
 // CPA applies oauth-model-alias to the models this plugin registers, so the
 // gateway may route a request whose model ID is an alias (e.g.
@@ -389,6 +391,7 @@ var modelAliasCache struct {
 	sync.RWMutex
 	byAlias map[string]string
 }
+
 // ------------------------------------------------------------------------------
 // Usage reporting (request monitoring)
 // ------------------------------------------------------------------------------
@@ -664,6 +667,7 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 		Metadata: meta,
 	}
 }
+
 // -----------------------------------------------------------------------------
 
 func handleExecExecute(raw []byte) ([]byte, error) {
@@ -781,6 +785,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
+
 // -----------------------------------------------------------------------------
 
 func okEnvelope(v any) ([]byte, error) {

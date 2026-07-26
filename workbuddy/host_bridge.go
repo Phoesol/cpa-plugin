@@ -58,7 +58,6 @@ type rpcHostHTTPRequestWire struct {
 	Request *rpcHostHTTPInner `json:"request,omitempty"`
 }
 
-
 type rpcHostHTTPInner struct {
 	Method  string              `json:"method,omitempty"`
 	URL     string              `json:"url,omitempty"`
@@ -66,14 +65,12 @@ type rpcHostHTTPInner struct {
 	Body    []byte              `json:"body,omitempty"`
 }
 
-
 type rpcHostHTTPStreamResponseWire struct {
 	StatusCode int                         `json:"status_code"`
 	Headers    map[string][]string         `json:"headers,omitempty"`
 	StreamID   string                      `json:"stream_id,omitempty"`
 	Chunks     []pluginapi.HTTPStreamChunk `json:"chunks,omitempty"`
 }
-
 
 type rpcHostHTTPStreamReadResponseWire struct {
 	Payload []byte `json:"payload,omitempty"`
@@ -333,11 +330,9 @@ type hostStreamReader struct {
 	err  error
 }
 
-
 func newHostStreamReader(s *hostHTTPStream) *hostStreamReader {
 	return &hostStreamReader{s: s}
 }
-
 
 func (r *hostStreamReader) Read(p []byte) (int, error) {
 	// Drain buffered bytes first.
@@ -385,4 +380,3 @@ func mustJSON(v any) []byte {
 	}
 	return b
 }
-

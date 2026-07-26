@@ -187,7 +187,6 @@ func probeURL(target string, timeout time.Duration) bool {
 	return resp.StatusCode > 0
 }
 
-
 func readSecretFile(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -199,4 +198,3 @@ func readSecretFile(path string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
-

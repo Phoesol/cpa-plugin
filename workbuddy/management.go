@@ -71,11 +71,14 @@ type checkinSummary struct {
 // intermittently returns 500s; without a retry a single hiccup surfaces as a
 // panel error even though the very next request would succeed.
 var billingRetryDelays = []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
+
+// CapacityRemain/Used/Size         — lifetime package totals (Used often ≈0
 //
-//	CapacityRemain/Used/Size         — lifetime package totals (Used often ≈0
-//	                                   for monthly-refresh free packs)
-//	CycleCapacityRemain/Used/Size    — the active billing cycle; Used is
-//	                                   sometimes omitted entirely
+//	for monthly-refresh free packs)
+//
+// CycleCapacityRemain/Used/Size    — the active billing cycle; Used is
+//
+//	sometimes omitted entirely
 type resourcePackage struct {
 	PackageName         string `json:"PackageName"`
 	CapacityRemain      int64  `json:"CapacityRemain"`

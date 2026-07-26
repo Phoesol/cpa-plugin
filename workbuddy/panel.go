@@ -263,4 +263,3 @@ func servePanel(sub string) []byte {
 
 //go:embed panel.html
 var panelHTML []byte
-

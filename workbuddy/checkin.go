@@ -18,7 +18,6 @@ var (
 	schedulerMu   sync.Mutex
 )
 
-
 func ensureScheduler() {
 	schedulerMu.Lock()
 	defer schedulerMu.Unlock()
@@ -485,7 +484,6 @@ func summarizeCheckinResults(p1 checkinPhase1Result, phase2 []map[string]any, to
 	}
 }
 
-
 func checkinLockFor(authIndex string) *sync.Mutex {
 	v, _ := checkinLocks.LoadOrStore(authIndex, &sync.Mutex{})
 	return v.(*sync.Mutex)
@@ -512,4 +510,3 @@ func pruneCheckinLocks() {
 		return true
 	})
 }
-

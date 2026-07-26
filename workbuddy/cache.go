@@ -30,7 +30,6 @@ var (
 // cache corruption.
 var accountDetailFlight sync.Map // authID -> *accountDetailCall
 
-
 type accountDetailCall struct {
 	done chan struct{}
 	plan string
@@ -180,4 +179,3 @@ func cachedCheckinToday(authID string) *bool {
 	b := e.checkin.TodayCheckedIn
 	return &b
 }
-
