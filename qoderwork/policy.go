@@ -112,14 +112,12 @@ func isSoftRateLimit(status int, body string) bool {
 		strings.Contains(lower, "throttl")
 }
 
-// lifecycleActionFor chooses disable/delete/none from region + credits.
-// Does not consider reenable (that needs disabled flag).
+// lifecycleActionFor chooses disable/none from credits.
+// QoderWork is CN-only — disable (not delete) so check-in can restore credits
+// without forcing the user to re-import a PAT.
 func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
 	if !shouldActOnCredits(cr) {
 		return lifecycleNone
-	}
-	if region == "cn" {
-		return lifecycleDelete
 	}
 	return lifecycleDisable
 }

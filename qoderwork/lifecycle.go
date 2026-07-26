@@ -228,8 +228,6 @@ func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsS
 	}
 	action := lifecycleActionFor("cn", cr)
 	switch action {
-	case lifecycleDelete:
-		return deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
 		return disableAuth(authIndex, authID, sa, cr, reason)
 	default:
@@ -331,16 +329,6 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 
 	act := lifecycleActionFor(region, cr)
 	switch act {
-	case lifecycleDelete:
-		// P1-4: confirm before deleting a CN account — a transient 402
-		// from the upstream billing API could otherwise cause an irreversible
-		// delete. Re-fetch credits once more; only proceed if still exhausted.
-		cr2, err2 := fetchUserResource(sa)
-		if err2 != nil || !isCreditsExhausted(cr2) {
-			// Credits may have recovered (or fetch failed) — don't delete.
-			return lifecycleNone, nil
-		}
-		return lifecycleDelete, deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
 		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽")
 	default:
