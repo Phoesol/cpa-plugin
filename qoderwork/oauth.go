@@ -426,16 +426,28 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	})
 }
 
+// deviceExpiryUnix resolves the access-token expiry from a deviceToken
+// poll/refresh response. Poll returns expires_in (ms); refresh returns only
+// expires_at (RFC3339). Default: 30 days (observed dt- lifetime).
+func deviceExpiryUnix(tok *deviceTokenResponse) int64 {
+	if tok.ExpiresIn > 0 {
+		return time.Now().Add(time.Duration(tok.ExpiresIn) * time.Millisecond).Unix()
+	}
+	if tok.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, tok.ExpiresAt); err == nil {
+			return t.Unix()
+		}
+	}
+	return time.Now().Add(30 * 24 * time.Hour).Unix()
+}
+
 // buildStoredAuthFromDeviceToken maps a device-token grant onto storedAuth.
 // AccessToken=dt-, RefreshToken=drt-. When re-logging an account that already
 // has an auth file (e.g. a PAT-imported one), the existing PAT is PRESERVED
 // in PersonalToken — the two credential families coexist: OAuth tokens serve
 // traffic, the PAT remains as long-lived fallback for account recovery.
 func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoResponse) *storedAuth {
-	expiresAt := time.Now().Add(30 * 24 * time.Hour).Unix()
-	if tok.ExpiresIn > 0 {
-		expiresAt = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Millisecond).Unix()
-	}
+	expiresAt := deviceExpiryUnix(tok)
 	uid := tok.UserID
 	nickname := ""
 	if ui != nil {
@@ -514,10 +526,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		}
 		sa.Auth.AccessToken = tok.accessToken()
 		sa.Auth.RefreshToken = tok.RefreshToken
-		sa.Auth.ExpiresAt = preserveExpiry(
-			time.Now().Add(time.Duration(tok.ExpiresIn)*time.Millisecond).Unix(),
-			sa.Auth.ExpiresAt,
-		)
+		sa.Auth.ExpiresAt = preserveExpiry(deviceExpiryUnix(tok), sa.Auth.ExpiresAt)
 		return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
 	}
 

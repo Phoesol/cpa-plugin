@@ -130,15 +130,17 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	}
 
 	// Parse both response shapes: jobToken refresh returns {"token":...},
-	// deviceToken refresh returns {"device_token":...} (or "token").
+	// deviceToken refresh returns {"device_token":...} (or "token") plus an
+	// RFC3339 expires_at instead of expires_in.
 	var tok jobTokenResponse
 	_ = json.Unmarshal(data, &tok)
+	expiry := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Millisecond).Unix()
 	if tok.Token == "" {
 		var dt deviceTokenResponse
 		_ = json.Unmarshal(data, &dt)
 		tok.Token = dt.accessToken()
 		tok.RefreshToken = dt.RefreshToken
-		tok.ExpiresIn = dt.ExpiresIn
+		expiry = deviceExpiryUnix(&dt)
 	}
 	if tok.Token == "" {
 		return "failed", fmt.Errorf("refresh_failed: no token in response (raw=%s)", truncateRedacted(string(data), 200))
@@ -147,10 +149,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	if tok.RefreshToken != "" {
 		sa.Auth.RefreshToken = tok.RefreshToken
 	}
-	sa.Auth.ExpiresAt = preserveExpiry(
-		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Millisecond).Unix(),
-		sa.Auth.ExpiresAt,
-	)
+	sa.Auth.ExpiresAt = preserveExpiry(expiry, sa.Auth.ExpiresAt)
 	if err := persistAuthTokens(authIndex, sa); err != nil {
 		return "error", fmt.Errorf("persist: %w", err)
 	}

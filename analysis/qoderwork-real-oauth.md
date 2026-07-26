@@ -88,3 +88,40 @@ PAT 导入保留（存量账号+应急），文案补充"推荐 OAuth 登录"。
 3. PollLogin 应返回 Success + auth 文件落盘（type=qoderwork）
 4. curl chat 实测 dt- 是否可直接推理（关键未知数）
 5. 强制 expiresAt 过期触发 refresh，确认 deviceToken/refresh 通路
+
+---
+
+## 本地测试结论（2026-07-27，全部实测通过）
+
+脚本：`/tmp/qw_oauth_local_test.py`（login+refresh）+ `/tmp/qw_chat_local_test.py`（COSY chat）。
+token 只存 /tmp，CPA 不接触，排除宿主干扰。
+
+| 测试 | 结果 |
+|---|---|
+| OAuth 设备授权（PKCE + poll） | ✅ dt- + drt- 签发，user_id 正确 |
+| dt- userinfo / quota/usage | ✅ 200（dt- 直接跑业务端点，无需 jt-） |
+| **deviceToken/refresh** | ✅ drt- 换出**新 dt- + 新 drt-**（旋转式），新 dt- 立即可用 |
+| **dt- + COSY chat** | ✅ 200，3.2s，真实流式回复 |
+
+**关键事实**：
+1. dt- 与 jt- 走完全相同的 COSY 签名链路（`security_oauth_token` 字段填什么用什么），
+   chat 路径零改动。
+2. **refresh 响应形状与 poll 不同**：`{"device_token":..., "refresh_token":...,
+   "expires_at":"RFC3339", "refresh_token_expires_at":"RFC3339"}` —— 无 expires_in(ms)、
+   token 键名是 `device_token` 不是 `token`。插件解析必须兼容两种形状
+   （v0.2.3 已修 deviceExpiryUnix：expires_in → expires_at RFC3339 → 默认 30d）。
+3. refresh 是**旋转式**（drt- 也换新），必须回写新 drt-，否则下次 refresh 失败。
+4. dt- ≈30 天，drt- ≈1 年。
+
+## 已发现并修复的坑（v0.2.0 → v0.2.3）
+
+| 版本 | 坑 | 修复 |
+|---|---|---|
+| v0.2.0 | refresh 按 PersonalToken 是否存在路由 → 共存时 drt- 被劫持到 jobToken/refresh（400），PAT fallback 把 dt-/drt- 覆盖成 jt-/jrt- | v0.2.2：按 token 前缀路由（drt-→deviceToken/refresh，jrt-→jobToken/refresh） |
+| v0.2.0 | OAuth 登录落盘时 PersonalToken 清空 → 破坏共存 | v0.2.2：existingPATForUID 保留同 uid 已有 PAT |
+| v0.2.2 | deviceToken/refresh 响应只有 expires_at(RFC3339) 无 expires_in → expiresAt 算错 | v0.2.3：deviceExpiryUnix 兼容两种形状 |
+
+## 待解决（plan 编写中）
+
+host 15 分钟 auto-refresh 是否走插件 handleRefreshAuth 之外的 conductor 内部路径
+（疑似直接用文件里的 PAT 撞 jobToken/exchange）——子 agent 深扫后定方案。

@@ -52,6 +52,7 @@
 | **L9** | panel.html 剩余 workbuddy 字符串/逻辑清理 | 🟢 低 | ⏸ 待做 |
 | **L10** | LICENSE 归属声明优化（保留 lovingfish 归属，加 Sliverkiss 修改） | 🟢 低 | ✅ 完成 |
 | **L11** | **auth 分类修复（CPA 原生 type 契约对齐）**：给存量 29 个 workbuddy 文件补 `"type"` 字段 + ParseAuth 加 type 防御 | 🔥 高 | ✅ v0.1.19 |
+| **L12** | **真·OAuth 设备授权登录**（替代 PAT）：PKCE + device/selectAccounts + deviceToken/poll → dt-/drt-；deviceToken/refresh；与 PAT 家族共存兼容 | 🔥 高 | ⏸ 进行中（v0.2.3 线上，plan 编写中） |
 
 ---
 
