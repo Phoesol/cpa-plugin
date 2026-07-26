@@ -143,6 +143,19 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
 					ci = ci2
 				}
+				// P1-5: checkin grants new credits — refresh the credits cache
+				// immediately so the panel shows the updated balance without
+				// waiting for the async reconcile pass.
+				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
+					if v, ok := accountCache.Load(f.ID); ok {
+						if prev, ok2 := v.(*accountCacheEntry); ok2 {
+							fresh := *prev
+							fresh.credits = cr2
+							fresh.fetched = time.Now()
+							accountCache.Store(f.ID, &fresh)
+						}
+					}
+				}
 			}
 		}
 		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).

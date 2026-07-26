@@ -57,6 +57,11 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 
 	// Singleflight: only one goroutine performs the upstream fetch per authID.
 	// Others wait on the in-flight call's done channel and reuse its result.
+	// Note: force=true callers DO join the flight (P1-1 trade-off). This is
+	// intentional: the flight window is short (~3 concurrent fetches), and
+	// skipping it would re-introduce the P0-2 race where concurrent writers
+	// overwrite each other's cache entries. The result a force caller gets
+	// is at most a few hundred ms old — fresh enough for lifecycle decisions.
 	call := &accountDetailCall{done: make(chan struct{})}
 	actual, loaded := accountDetailFlight.LoadOrStore(authID, call)
 	if loaded {

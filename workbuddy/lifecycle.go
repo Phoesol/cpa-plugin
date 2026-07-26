@@ -304,20 +304,16 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		}
 	}
 	if cr == nil {
-		cr, err = fetchUserResource(sa)
-		if err != nil {
-			// unknown credits → no-op (safe default)
+		// Route credits fetch through cachedAccountDetails so singleflight
+		// serializes concurrent writers for the same authID (P0-2 fix: the
+		// previous Load→Store sequence here had a check-then-act window
+		// where a concurrent dashboard cachedAccountDetails write could
+		// overwrite our merge with newer plan/checkin values).
+		_, _, cr2, _ := cachedAccountDetails(authID, sa, true)
+		cr = cr2
+		if cr == nil {
 			return lifecycleNone, nil
 		}
-		// Merge into cache without wiping plan/checkin from dashboard fetch.
-		entry := &accountCacheEntry{credits: cr, fetched: time.Now()}
-		if v, ok := accountCache.Load(authID); ok {
-			if prev, ok2 := v.(*accountCacheEntry); ok2 {
-				entry.plan = prev.plan
-				entry.checkin = prev.checkin
-			}
-		}
-		accountCache.Store(authID, entry)
 	}
 
 	region := accountRegion(sa)
@@ -336,6 +332,14 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 	act := lifecycleActionFor(region, cr)
 	switch act {
 	case lifecycleDelete:
+		// P1-4: confirm before deleting a Global account — a transient 402
+		// from the upstream billing API could otherwise cause an irreversible
+		// delete. Re-fetch credits once more; only proceed if still exhausted.
+		cr2, err2 := fetchUserResource(sa)
+		if err2 != nil || !isCreditsExhausted(cr2) {
+			// Credits may have recovered (or fetch failed) — don't delete.
+			return lifecycleNone, nil
+		}
 		return lifecycleDelete, deleteAuth(authIndex, authID, sa)
 	case lifecycleDisable:
 		return lifecycleDisable, disableAuth(authIndex, authID, sa, cr, "耗尽")
