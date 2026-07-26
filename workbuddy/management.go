@@ -1642,15 +1642,33 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": "no matching account"}
 	}
 
-	// --- Phase 1: classify (filter) before any check-in side effect ---
-	var (
-		skippedGlobal int
-		already       int
-		eligible      []checkinCandidate
-		results       []map[string]any
-	)
-	// Concurrent classify: N accounts × status API; serial was multi-second and
-	// could trip browser/gateway cancel (502 context canceled).
+	// Phase 1: classify each account concurrently (no side effects).
+	phase1 := classifyCheckinTargets(targets, single)
+
+	// Phase 2: check-in only eligible CN accounts concurrently.
+	phase2 := executeCheckinBatch(phase1.eligible)
+
+	// Phase 3: aggregate results + summary counters.
+	return summarizeCheckinResults(phase1, phase2, len(targets))
+}
+
+// checkinPhase1Result is the outcome of classifyCheckinTargets: per-target
+// classification plus the side-effect results (errors / global / already) that
+// don't need a Phase 2 call.
+type checkinPhase1Result struct {
+	eligible      []checkinCandidate
+	results       []map[string]any
+	already       int
+	skippedGlobal int
+}
+
+// classifyCheckinTargets concurrently determines which targets are CN and
+// need a check-in call today. No state mutation happens here — Phase 2 owns
+// the side effects.
+//
+// Concurrent classify: N accounts × status API; serial was multi-second and
+// could trip browser/gateway cancel (502 context canceled).
+func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) checkinPhase1Result {
 	type classResult struct {
 		idx    int
 		f      pluginapi.HostAuthFileEntry
@@ -1699,32 +1717,28 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	go func() { wg.Wait(); close(classCh) }()
 	// Preserve input order for stable UI.
 	classified := make([]classResult, len(targets))
-	got := 0
 	for cr := range classCh {
 		classified[cr.idx] = cr
-		got++
 	}
-	_ = got
+
+	out := checkinPhase1Result{}
 	for _, cr := range classified {
-		if cr.kind == "" {
-			continue
-		}
 		switch cr.kind {
 		case "err":
-			results = append(results, map[string]any{
+			out.results = append(out.results, map[string]any{
 				"auth_index": cr.f.AuthIndex, "error": cr.errMsg, "skipped": false,
 			})
 		case "global":
-			skippedGlobal++
+			out.skippedGlobal++
 			if single {
-				results = append(results, map[string]any{
+				out.results = append(out.results, map[string]any{
 					"auth_index": cr.f.AuthIndex, "nickname": cr.nick,
 					"success": false, "skipped": true, "reason": "global",
 					"message": "国际版账号不支持签到，请使用领取专家加油包",
 				})
 			}
 		case "already":
-			already++
+			out.already++
 			// Keep checkin in cache so light-load dashboard shows 已签到.
 			if ci2, _ := fetchCheckinStatus(cr.sa); ci2 != nil {
 				var prev *accountCacheEntry
@@ -1742,42 +1756,48 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 				_, _ = reconcileOneAccount(cr.f.AuthIndex, cr.f.ID, true)
 			}
 			if single {
-				results = append(results, map[string]any{
+				out.results = append(out.results, map[string]any{
 					"auth_index": cr.f.AuthIndex, "nickname": cr.nick,
 					"success": true, "skipped": true, "reason": "already",
 					"message": "already checked in today",
 				})
 			}
 		case "eligible":
-			eligible = append(eligible, checkinCandidate{
+			out.eligible = append(out.eligible, checkinCandidate{
 				authIndex: cr.f.AuthIndex, authID: cr.f.ID, nickname: cr.nick, sa: cr.sa,
 			})
 		}
 	}
+	return out
+}
 
-	// --- Phase 2: check-in only filtered CN accounts ---
+// executeCheckinBatch runs the actual check-in calls for eligible CN accounts
+// under per-account mutex (B4). Each goroutine re-reads sa + status under the
+// lock so a parallel tab can't double-checkin.
+func executeCheckinBatch(eligible []checkinCandidate) []map[string]any {
 	type checkinOut struct {
 		idx int
 		out map[string]any
 	}
 	outCh := make(chan checkinOut, len(eligible))
-	var wg2 sync.WaitGroup
-	sem2 := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
 	for i, c := range eligible {
-		wg2.Add(1)
+		wg.Add(1)
 		go func(i int, c checkinCandidate) {
-			defer wg2.Done()
-			sem2 <- struct{}{}
-			defer func() { <-sem2 }()
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			mu := checkinLockFor(c.authIndex)
 			mu.Lock()
+			defer mu.Unlock()
+
 			// Re-read under lock: another tab may have just checked in.
 			sa := c.sa
 			if sa2, err := hostAuthGet(c.authIndex); err == nil && sa2 != nil {
 				sa = sa2
 			}
 			if ci, _ := fetchCheckinStatus(sa); ci != nil && ci.TodayCheckedIn {
-				mu.Unlock()
 				outCh <- checkinOut{idx: i, out: map[string]any{
 					"auth_index": c.authIndex, "nickname": c.nickname,
 					"success": true, "skipped": true, "reason": "already",
@@ -1846,18 +1866,28 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					})
 				}
 			}
-			mu.Unlock()
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
 			}
 			outCh <- checkinOut{idx: i, out: out}
 		}(i, c)
 	}
-	go func() { wg2.Wait(); close(outCh) }()
+	go func() { wg.Wait(); close(outCh) }()
 	phase2 := make([]map[string]any, len(eligible))
 	for o := range outCh {
 		phase2[o.idx] = o.out
 	}
+	return phase2
+}
+
+// summarizeCheckinResults folds Phase 1 + Phase 2 outcomes into the response
+// payload the panel expects. Counter rules (kept stable since v0.6.30):
+//   - error non-nil                      → fail
+//   - reason=="already"                  → already (counted once)
+//   - success==true (no reason)          → success
+//   - success==false,error==nil          → already if msg says so, else fail
+func summarizeCheckinResults(p1 checkinPhase1Result, phase2 []map[string]any, total int) map[string]any {
+	results := append([]map[string]any{}, p1.results...)
 	successN, failN, already2 := 0, 0, 0
 	for _, out := range phase2 {
 		if out == nil {
@@ -1868,19 +1898,16 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			failN++
 			continue
 		}
-		if reason, _ := out["reason"].(string); reason == "already" || out["skipped"] == true {
-			// late already under lock
-			if reason == "already" {
-				already2++
-			}
+		reason, _ := out["reason"].(string)
+		if reason == "already" {
+			already2++
+			continue
 		}
 		if out["success"] == true {
-			if reason, _ := out["reason"].(string); reason == "already" {
-				// counted in already2
-			} else {
-				successN++
-			}
-		} else if out["error"] == nil && out["success"] == false {
+			successN++
+			continue
+		}
+		if out["success"] == false {
 			// business soft-fail without error field
 			msg, _ := out["message"].(string)
 			if strings.Contains(strings.ToLower(msg), "already") || strings.Contains(msg, "已签") {
@@ -1890,17 +1917,16 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			}
 		}
 	}
-	alreadyTotal := already + already2
 	return map[string]any{
 		"results": results,
 		"summary": map[string]any{
-			"total":          len(targets),
-			"eligible":       len(eligible),
+			"total":          total,
+			"eligible":       len(p1.eligible),
 			"success":        successN,
-			"already":        alreadyTotal,
-			"skipped_global": skippedGlobal,
+			"already":        p1.already + already2,
+			"skipped_global": p1.skippedGlobal,
 			"fail":           failN,
-			"attempted":      len(eligible),
+			"attempted":      len(p1.eligible),
 		},
 	}
 }
