@@ -87,60 +87,8 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{"checkin_auto": cur, "persistent": false}
 }
 
-// handleClaimTrial claims the expert trial pack for one Global account.
-// CN accounts are rejected — the trial endpoint is Global-only.
-func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		AuthIndex string `json:"auth_index"`
-	}
-	_ = json.Unmarshal(req.Body, &body)
-	authIndex := strings.TrimSpace(body.AuthIndex)
-	if authIndex == "" {
-		return map[string]any{"error": "auth_index is required"}
-	}
-	files, err := hostAuthList()
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	for _, f := range files {
-		if f.AuthIndex != authIndex {
-			continue
-		}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return map[string]any{"auth_index": authIndex, "error": err.Error()}
-		}
-		if !isGlobalDomain(sa.Auth.Domain) {
-			return map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
-		}
-		res, err := performTrialCall(sa)
-		out := map[string]any{"auth_index": authIndex, "nickname": sa.Account.Nickname}
-		if err != nil {
-			out["error"] = err.Error()
-		} else {
-			for k, v := range res {
-				out[k] = v
-			}
-		}
-		// Invalidate credits cache (copy entry, set credits=nil, keep plan/checkin).
-		if v, ok := accountCache.Load(f.ID); ok {
-			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				fresh := *e
-				fresh.credits = nil
-				fresh.fetched = time.Now()
-				accountCache.Store(f.ID, &fresh)
-			}
-		}
-		if lifecycleEnabled() {
-			_, _ = reconcileOneAccount(authIndex, f.ID, true)
-		}
-		return out
-	}
-	return map[string]any{"error": "account not found"}
-}
-
 // handleSelectAuth sets the panel-selected account used for chat routing.
-// Region (CN/Global) is read from that account's stored domain on each request.
+// Region is always CN for QoderWork.
 func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -169,7 +117,7 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{
 			"ok":          true,
 			"active_auth": f.ID,
-			"region":      accountRegion(sa),
+			"region":      "cn",
 			"nickname":    sa.Account.Nickname,
 			"uid":         sa.Account.UID,
 		}
@@ -208,7 +156,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 				"auth_index": authIndex,
 				"nickname":   sa.Account.Nickname,
 				"uid":        sa.Account.UID,
-				"region":     accountRegion(sa),
+				"region":     "cn",
 				"name":       f.Name,
 				"label":      f.Label,
 				"disabled":   f.Disabled,
@@ -219,8 +167,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			} else {
 				acct["credits"] = cr
 				acct["exhausted"] = isCreditsExhausted(cr)
-				if isGlobalDomain(sa.Auth.Domain) {
-					acct["trial_claimed"] = hasTrialPack(cr)
+				if false {
 				}
 				// Also fetch plan so the badge updates on lazy load.
 				acct["plan"] = fetchPaymentType(sa)

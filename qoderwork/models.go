@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,8 +59,13 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 	if err != nil || len(files) == 0 {
 		return models
 	}
+	// Strict filename-prefix match — same filter as host_auth.go hostAuthList.
+	// (Earlier code also matched files containing "codebuddy" anywhere, which
+	// would wrongly include workbuddy-*.json auths here and cause us to call
+	// the qoderwork models API with a workbuddy token.)
+	prefix := providerName + "-"
 	for _, f := range files {
-		if !strings.Contains(strings.ToLower(f.Name), "qoderwork") && !strings.Contains(strings.ToLower(f.Name), "codebuddy") && !strings.EqualFold(f.Provider, "qoderwork") {
+		if !strings.HasPrefix(strings.ToLower(f.Name), prefix) {
 			continue
 		}
 		raw, err := hostAuthGetByIndex(f.AuthIndex)
@@ -120,33 +124,7 @@ func extractAccessToken(raw []byte) (string, bool) {
 	return "", false
 }
 
-// realmFromToken decodes the JWT iss claim to determine the account realm.
-// Global tokens have iss=...qoderwork.ai...; CN tokens have iss=...codebuddy.cn...
-// Returns true if the token is Global.
-func isGlobalToken(accessToken string) bool {
-	parts := strings.Split(accessToken, ".")
-	if len(parts) < 2 {
-		return false
-	}
-	payload := parts[1]
-	// base64url padding
-	if pad := len(payload) % 4; pad != 0 {
-		payload += strings.Repeat("=", 4-pad)
-	}
-	raw, err := base64.URLEncoding.DecodeString(payload)
-	if err != nil {
-		return false
-	}
-	var claims struct {
-		ISS string `json:"iss"`
-	}
-	if json.Unmarshal(raw, &claims) != nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(claims.ISS), "qoderwork.ai")
-}
-
-// callModelsAPI GETs /console/enterprises/personal/models from the upstream.
+// callModelsAPI GETs /algo/api/v2/model/list from the QoderWork gateway.
 // Uses the shared client (connection pooling) with a per-request 15s budget;
 // the shared client's own 120s timeout stays as the outer bound.
 func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {

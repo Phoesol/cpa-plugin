@@ -1,9 +1,9 @@
 // lifecycle.go implements credit-based auth lifecycle for qoderwork:
 //   - CN exhausted  → disable auth file (disabled:true), re-enable after check-in when credits return
-//   - Global exhausted → delete auth file (one-shot quota)
+//   - exhausted → delete auth file (one-shot quota)
 //   - Unknown credits → no-op (never mis-kill)
 //   - Hard credit errors from executor → recheck credits then apply policy
-//   - Soft rate limits → do not delete Global
+//   - Soft rate limits → do not delete CN
 package main
 
 import (
@@ -141,7 +141,7 @@ func reenableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary) 
 	return nil
 }
 
-// deleteAuth removes Global exhausted credentials from disk.
+// deleteAuth removes exhausted credentials from disk.
 func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
@@ -155,14 +155,14 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	if path == "" {
 		// Try to reconstruct path from peer qoderwork files' directory + canonical name.
 		name := authFileNameFor(sa)
-		if phys.Name != "" && !isLegacyWorkbuddyAuthName(phys.Name) {
+		if phys.Name != "" && !isLegacyAuthName(phys.Name) {
 			name = phys.Name
-		} else if strings.TrimSpace(phys.Name) != "" && isLegacyWorkbuddyAuthName(phys.Name) {
+		} else if strings.TrimSpace(phys.Name) != "" && isLegacyAuthName(phys.Name) {
 			name = authFileNameFor(sa)
 		}
 		if dir := peerAuthDir(); dir != "" && name != "" {
 			candidate := filepath.Join(dir, name)
-			if isSafeWorkbuddyAuthPath(candidate) {
+			if isSafeAuthPath(candidate) {
 				path = candidate
 			}
 		}
@@ -175,7 +175,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 			return fmt.Errorf("no path and build failed: %w", berr)
 		}
 		name := authFileNameFor(sa)
-		if phys.Name != "" && !isLegacyWorkbuddyAuthName(phys.Name) {
+		if phys.Name != "" && !isLegacyAuthName(phys.Name) {
 			name = phys.Name
 		}
 		if err := hostAuthPersistMigrate(name, "", "", raw); err != nil {
@@ -194,7 +194,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		if dir := filepath.Dir(path); dir != "" {
 			legacy := filepath.Join(dir, authFileName)
 			// A-36: same path safety as primary deleteAuthFileInDir.
-			if isLegacyWorkbuddyAuthName(filepath.Base(legacy)) {
+			if isLegacyAuthName(filepath.Base(legacy)) {
 				_ = deleteAuthFileInDir(legacy, dir)
 			}
 		}
@@ -221,12 +221,12 @@ func peerAuthDir() string {
 	return ""
 }
 
-// applyExhaustedPolicy applies disable (CN) or delete (Global).
+// applyExhaustedPolicy applies disable (CN) or delete (CN).
 func applyExhaustedPolicy(authIndex, authID string, sa *storedAuth, cr *creditsSummary, reason string) error {
 	if !lifecycleEnabled() {
 		return nil
 	}
-	action := lifecycleActionFor(accountRegion(sa), cr)
+	action := lifecycleActionFor("cn", cr)
 	switch action {
 	case lifecycleDelete:
 		return deleteAuth(authIndex, authID, sa)
@@ -316,7 +316,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		}
 	}
 
-	region := accountRegion(sa)
+	region := "cn"
 	if region == "cn" && disabled {
 		if shouldReenableCN(true, cr) {
 			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
@@ -332,7 +332,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 	act := lifecycleActionFor(region, cr)
 	switch act {
 	case lifecycleDelete:
-		// P1-4: confirm before deleting a Global account — a transient 402
+		// P1-4: confirm before deleting a CN account — a transient 402
 		// from the upstream billing API could otherwise cause an irreversible
 		// delete. Re-fetch credits once more; only proceed if still exhausted.
 		cr2, err2 := fetchUserResource(sa)

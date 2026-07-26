@@ -222,7 +222,7 @@ func usageDetailFromCompletion(payload []byte) usage.Detail {
 }
 
 // sseUsageCollector scans upstream SSE chunks and keeps the last "usage"
-// object seen (CodeBuddy emits it on the terminal chunk).
+// object seen (QoderWork emits it on the terminal chunk).
 type sseUsageCollector struct {
 	last map[string]any
 }

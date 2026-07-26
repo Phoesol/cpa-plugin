@@ -1,8 +1,8 @@
 // Package main implements the qoderwork CLIProxyAPI dynamic plugin.
 //
-// qoderwork wraps Tencent CodeBuddy (copilot.tencent.com) as a cliproxy
-// provider: it performs the CodeBuddy web login flow, refreshes access
-// tokens, and forwards OpenAI-compatible chat completion requests to the
+// qoderwork wraps the QoderWork CN (qoder.com.cn) OpenAPI as a cliproxy
+// provider: it exchanges a PAT for a jobToken, refreshes it, signs inference
+// requests with COSY, and exposes the standard chat-completions interface.
 // upstream /v2/chat/completions endpoint.
 //
 // This file is a clean-room reimplementation reconstructed from the public
@@ -103,7 +103,7 @@ const (
 )
 
 // loginCtx holds the cookie-affined HTTP client for one in-flight login flow.
-// CodeBuddy associates the browser login with the state issued at auth/state,
+// QoderWork associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
 	client  *http.Client
@@ -261,7 +261,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodExecutorExecuteStream:
 		return handleExecStream(request)
 	case pluginabi.MethodExecutorCountTokens:
-		// Upstream CodeBuddy has no dedicated count_tokens API. Return
+		// Upstream QoderWork has no dedicated count_tokens API. Return
 		// unhandled-style zero estimate so clients fall back / skip.
 		return okEnvelope(pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":0}`)})
 	case pluginabi.MethodManagementRegister:
@@ -342,7 +342,7 @@ func wbRegistration() registration {
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
-				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN / delete Global when credits exhausted; re-enable CN after check-in restores credits (default true)."},
+				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN when credits exhausted; re-enable CN after check-in restores credits (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
 				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
@@ -462,7 +462,7 @@ type storedAccount struct {
 	Nickname     string `json:"nickname"`
 }
 
-// apiEnvelope is the generic {code,msg,data} wrapper used by every CodeBuddy API.
+// apiEnvelope is the generic {code,msg,data} wrapper used by every QoderWork API.
 type apiEnvelope struct {
 	Code int             `json:"code"`
 	Msg  string          `json:"msg"`
@@ -538,7 +538,7 @@ func commonHeaders(req *http.Request) {
 
 // upstreamBaseFor returns the OpenAPI host. QoderWork only has CN, so this
 // is a single constant — the helper shape is kept to minimise diff against
-// the workbuddy skeleton (callers pass sa but it's ignored).
+// the workbuddy skeleton (clean-room reference) (callers pass sa but it's ignored).
 func upstreamBaseFor(sa *storedAuth) string { return upstreamBaseCN }
 
 // backendHeaders applies auth-derived headers to a chat completion request.

@@ -42,10 +42,10 @@ func authFileNameFor(sa *storedAuth) string {
 	return authFileName
 }
 
-// isLegacyWorkbuddyAuthName reports the historical single-file name that collides
+// isLegacyAuthName reports the historical single-file name that collides
 // with multi-account qoderwork-<uid>.json for the same credential.
 
-func isLegacyWorkbuddyAuthName(name string) bool {
+func isLegacyAuthName(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), authFileName)
 }
 
@@ -58,15 +58,15 @@ func resolveAuthFileTarget(sa *storedAuth, phys *hostAuthPhysical) (name, path s
 	if phys != nil {
 		path = strings.TrimSpace(phys.Path)
 		physName := strings.TrimSpace(phys.Name)
-		if physName != "" && !isLegacyWorkbuddyAuthName(physName) {
+		if physName != "" && !isLegacyAuthName(physName) {
 			// Already on multi-account name — keep host name (should match uid form).
 			name = physName
 		}
-		if isLegacyWorkbuddyAuthName(physName) || isLegacyWorkbuddyAuthName(filepath.Base(path)) {
+		if isLegacyAuthName(physName) || isLegacyAuthName(filepath.Base(path)) {
 			if sa != nil && strings.TrimSpace(sa.Account.UID) != "" {
 				// Migrate: write canonical, delete legacy path after save.
 				legacyPath = path
-				if isLegacyWorkbuddyAuthName(filepath.Base(path)) {
+				if isLegacyAuthName(filepath.Base(path)) {
 					// path stays legacy until we write canonical beside it
 				}
 				// After persist to name, remove legacyPath if different.
@@ -133,7 +133,7 @@ func hostAuthPersistMigrate(name, path, legacyPath string, raw []byte) error {
 	if legacyPath != "" && !strings.EqualFold(filepath.Base(legacyPath), name) {
 		// host.auth.save already wrote name under auth dir; drop legacy file.
 		// A-36: use deleteAuthFileInDir (abs path + dir confine) for consistency.
-		if isLegacyWorkbuddyAuthName(filepath.Base(legacyPath)) {
+		if isLegacyAuthName(filepath.Base(legacyPath)) {
 			_ = deleteAuthFileInDir(legacyPath, filepath.Dir(legacyPath))
 		}
 	}
@@ -208,12 +208,12 @@ func parseDisabledFromAuthJSON(raw []byte) bool {
 	return m.Disabled
 }
 
-// isSafeWorkbuddyAuthPath rejects non-qoderwork filenames, empty paths, and
+// isSafeAuthPath rejects non-qoderwork filenames, empty paths, and
 // traversal attempts. It validates both the basename pattern AND that the path
 // does not escape via ".." segments. Callers that need to confine deletes to
 // a specific directory should additionally check isPathUnder(path, dir).
 
-func isSafeWorkbuddyAuthPath(path string) bool {
+func isSafeAuthPath(path string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return false
@@ -263,7 +263,7 @@ func isPathUnder(path, dir string) bool {
 // confinement). Retained for test coverage of the base safe-delete path.
 
 func deleteAuthFileAt(path string) error {
-	if !isSafeWorkbuddyAuthPath(path) {
+	if !isSafeAuthPath(path) {
 		return fmt.Errorf("refusing to delete unsafe path: %s", path)
 	}
 	err := os.Remove(path)
@@ -279,7 +279,7 @@ func deleteAuthFileAt(path string) error {
 // The path MUST be absolute (defense against relative-path CWD deletion).
 
 func deleteAuthFileInDir(path, dir string) error {
-	if !isSafeWorkbuddyAuthPath(path) {
+	if !isSafeAuthPath(path) {
 		return fmt.Errorf("refusing to delete unsafe path: %s", path)
 	}
 	if !filepath.IsAbs(path) {

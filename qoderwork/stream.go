@@ -254,7 +254,7 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 
 // cleanChunkJSON strips only the known-problematic empty tool-call shells
 // from choice deltas: a null/empty function_call and an empty tool_calls array
-// (CodeBuddy emits these on the terminal chunk, and strict clients interpret
+// (QoderWork emits these on the terminal chunk, and strict clients interpret
 // them as a truncated tool call). Other empty-but-legal values are preserved:
 // content:"" is a valid delta (pure tool-call chunk) and the role-only first
 // chunk must survive so clients can establish the message role.
@@ -528,4 +528,32 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+
+// isEmptyValue reports whether v is a "zero" SSE field that should be
+// stripped from outgoing chunks. Used by cleanChunkJSON to drop the legacy
+// function_call shell ({"name":"","arguments":""}) some upstreams emit on
+// the terminal chunk — clients that strictly validate the delta will reject
+// the shell as an invalid tool call.
+func isEmptyValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		if len(x) == 0 {
+			return true
+		}
+		for _, val := range x {
+			if !isEmptyValue(val) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }

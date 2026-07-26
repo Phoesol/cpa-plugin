@@ -172,7 +172,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>QoderWork 账号面板</h1>
-  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· 耗尽自动关</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -184,14 +184,14 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" id="importBtn" onclick="openImportModal()">导入 QoderWork 凭证</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
+    
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
     <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
-    <button type="button" class="ftag" data-region="global" onclick="filterRegion('global',this)">Global <span class="cnt" id="cntGlobal">0</span></button>
+    
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
@@ -335,13 +335,13 @@ function card(a){
   const ci=a.checkin||{}, cr=a.credits;
   const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
   const region=a.region||"cn";
-  const isGlobal=region==="global";
+  
   const disabled=!!a.disabled;
   const selected=!!a.selected;
-  const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
-  // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
+  const regionBadge=`<span class="badge cn">CN</span>`;
+  // CN: 签到 button (or 已领取 if trial_claimed)
   let actionHTML;
-  if(isGlobal){
+  if(false){
     if(a.trial_claimed){
       actionHTML='<button class="done" disabled="disabled">已领取</button>';
     }else{
@@ -476,7 +476,7 @@ function updateFilterCounts(accounts){
   });
   const elAll=document.getElementById("cntAll");
   const elCn=document.getElementById("cntCn");
-  const elGl=document.getElementById("cntGlobal");
+  
   const elEx=document.getElementById("cntExhausted");
   if(elAll) elAll.textContent=String((accounts||[]).length);
   if(elCn) elCn.textContent=String(cn);
@@ -530,7 +530,7 @@ function renderSummary(accounts){
   const total=size>0?size:(remain+used);
   const pct=total>0?Math.round(used/total*100):0;
   let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
-  const scopeLabel=currentFilter==="all"?"全部账号":(currentFilter==="global"?"Global 账号":"CN 账号");
+  const scopeLabel="全部账号";
   const allTotal=allSize>0?allSize:(allRemain+allUsed);
   box.style.display="block";
   box.innerHTML=`
@@ -550,7 +550,7 @@ function renderSummary(accounts){
       <div class="pb-meta">可用 ${remain} · 已用 ${used} · 池 ${total||0}（签到加包会抬高池和可用，不等于没消耗）</div>
     </div>
     ${currentFilter==="all"?`
-    <div class="pb-meta" style="margin-top:10px">分区域：CN 可用 ${cnRemain} / 已用 ${cnUsed} · Global 可用 ${glRemain} / 已用 ${glUsed}</div>
+    <div class="pb-meta" style="margin-top:10px">CN 可用 ${cnRemain} / 已用 ${cnUsed}</div>
     `:`
     <div class="pb-meta" style="margin-top:10px">全部账号池：可用 ${allRemain} · 已用 ${allUsed} · 池 ${allTotal||0}</div>
     `}
@@ -719,7 +719,7 @@ async function selectAuth(idx, btn){
     }
     activeAuthId=d.active_auth||idx;
     const who=d.nickname||idx;
-    const region=d.region==="global"?"Global":"CN";
+    const region="CN";
     toast("已选用","ok",who+" · "+region);
     // Re-render from local state for instant feedback, then soft reload
     (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
@@ -767,17 +767,17 @@ async function refreshCredits(idx, btn){
 async function checkinAll(btn){
   busy(btn,true);
   try{
-    // Backend prefilters: Global skipped, already-checked skipped; only CN-need-checkin run.
+    // Backend prefilters: already-checked skipped; only CN-need-checkin run.
     const d=await api("/checkin",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
     const rs=d.results||[];
     const s=d.summary||{};
     const ok=Number(s.success??rs.filter(x=>x.success&&x.reason!=="already"&&!x.skipped).length)||0;
     const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
     const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
-    const skippedGlobal=Number(s.skipped_global||0);
+    const skippedCN=Number(s.skipped_cn||0);
     const eligible=Number(s.eligible??(ok+fail))||0;
     const detailParts=[];
-    if(skippedGlobal) detailParts.push("跳过 Global "+skippedGlobal);
+    
     if(already) detailParts.push("今日已签 "+already);
     if(eligible) detailParts.push("待签 "+eligible);
     const detail=detailParts.join(" · ");
@@ -787,10 +787,10 @@ async function checkinAll(btn){
       toast("批量签到："+ok+" 成功 / "+fail+" 失败"+(already?" / "+already+" 已签":""),"err",errDetail||detail);
     }else if(ok){
       toast("批量签到："+ok+" 成功"+(already?" / "+already+" 今日已签":""),"ok",detail);
-    }else if(already||skippedGlobal){
-      toast("无需签到","ok",detail||"CN 今日已签 · Global 已跳过");
+    }else if(already||skippedCN){
+      toast("无需签到","ok",detail||"CN 今日已签");
     }else if(!rs.length && !eligible){
-      toast("没有需要签到的 CN 账号","warn",detail||"Global 不参与签到");
+      toast("没有需要签到的 CN 账号","warn",detail||"");
     }else{
       toast("没有需要签到的账号","warn",detail);
     }

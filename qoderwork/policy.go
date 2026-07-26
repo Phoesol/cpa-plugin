@@ -1,6 +1,6 @@
 // policy.go is the pure decision layer for credit-driven lifecycle actions:
 // given an account's region and current credits, decide whether to disable
-// (CN), delete (Global), re-enable (CN after check-in restores credits), or
+// CN: disable when exhausted, re-enable after check-in restores credits, or
 // leave it alone. No I/O happens here — reconcileOneAccount consumes these
 // decisions and applies them via the lifecycle.go authfile helpers.
 package main
@@ -118,7 +118,7 @@ func lifecycleActionFor(region string, cr *creditsSummary) lifecycleAction {
 	if !shouldActOnCredits(cr) {
 		return lifecycleNone
 	}
-	if region == "global" {
+	if region == "cn" {
 		return lifecycleDelete
 	}
 	return lifecycleDisable
@@ -141,11 +141,11 @@ func shouldReenableCN(disabled bool, cr *creditsSummary) bool {
 
 // displayNote builds a one-line note for CPAMP Auth cards.
 func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
-	region := strings.ToUpper(accountRegion(sa))
+	region := strings.ToUpper("cn")
 	if region == "CN" {
 		region = "CN"
 	} else {
-		region = "Global"
+		region = "CN"
 	}
 	parts := []string{region}
 	if disabled {
@@ -172,15 +172,15 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	return note
 }
 
-// labelForAuth adds [CN]/[Global] for host labels.
+// labelForAuth adds [CN] for host labels.
 func labelForAuth(sa *storedAuth) string {
 	base := "QoderWork"
 	if sa != nil && strings.TrimSpace(sa.Account.Nickname) != "" {
 		base = strings.TrimSpace(sa.Account.Nickname)
 	}
 	tag := "CN"
-	if accountRegion(sa) == "global" {
-		tag = "Global"
+	if "cn" == "global" {
+		tag = "CN"
 	}
 	return base + " [" + tag + "]"
 }

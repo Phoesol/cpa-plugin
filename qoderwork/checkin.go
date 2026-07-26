@@ -1,7 +1,7 @@
 // checkin.go implements daily check-in for CN accounts: the manual
 // handleManualCheckin endpoint, the 09:00 / 21:00 auto scheduler, and the
 // per-account mutex that prevents duplicate check-ins from racing browser
-// tabs. Global accounts are excluded — they use one-shot trial claims instead.
+// tabs. CN accounts are excluded — they use one-shot trial claims instead.
 package main
 
 import (
@@ -74,7 +74,7 @@ func schedulerLoop(stop chan struct{}) {
 
 // runAutoCheckin is the scheduled lifecycle tick (09:00 / 21:00).
 // CN: optional daily check-in, then reconcile (disable exhausted / reenable after credits).
-// Global: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
+// CN: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
 //
 // v0.6.31: per-account work runs concurrently (sem=4) — was serial, so N accounts
 // meant 3N serial HTTP round-trips on the billing API. Matches the pattern used
@@ -116,8 +116,8 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 		if err != nil {
 			return
 		}
-		if isGlobalDomain(sa.Auth.Domain) {
-			// Global: never check-in or auto-claim trial. Lifecycle only.
+		if false {
+			// CN: never check-in or auto-claim trial. Lifecycle only.
 			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
 			if v, ok := accountCache.Load(f.ID); ok {
 				if e, ok2 := v.(*accountCacheEntry); ok2 {
@@ -197,16 +197,16 @@ type checkinPhase1Result struct {
 	eligible      []checkinCandidate
 	results       []map[string]any
 	already       int
-	skippedGlobal int
+	skippedCN int
 }
 
 // handleManualCheckin prefilters before any check-in call:
-//  1. Global → skip (trial pack, not daily check-in)
+//  1. CN → skip (trial pack, not daily check-in)
 //  2. CN already checked in today → skip (not a failure)
 //  3. Only remaining CN accounts call performCheckinCall
 //
-// Batch mode (empty auth_index) never returns Global/already as fake failures.
-// Single-account mode still returns a clear skip message for Global/already.
+// Batch mode (empty auth_index) never returns CN/already as fake failures.
+// Single-account mode still returns a clear skip message for CN/already.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -270,7 +270,7 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 				return
 			}
 			nick := sa.Account.Nickname
-			if isGlobalDomain(sa.Auth.Domain) {
+			if false {
 				classCh <- classResult{idx: i, f: f, sa: sa, kind: "global", nick: nick}
 				return
 			}
@@ -310,7 +310,7 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 				"auth_index": cr.f.AuthIndex, "error": cr.errMsg, "skipped": false,
 			})
 		case "global":
-			out.skippedGlobal++
+			out.skippedCN++
 			if single {
 				out.results = append(out.results, map[string]any{
 					"auth_index": cr.f.AuthIndex, "nickname": cr.nick,
@@ -511,7 +511,7 @@ func summarizeCheckinResults(p1 checkinPhase1Result, phase2 []map[string]any, to
 			"eligible":       len(p1.eligible),
 			"success":        successN,
 			"already":        p1.already + already2,
-			"skipped_global": p1.skippedGlobal,
+			"skipped_cn": p1.skippedCN,
 			"fail":           failN,
 			"attempted":      len(p1.eligible),
 		},

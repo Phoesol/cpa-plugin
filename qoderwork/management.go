@@ -17,10 +17,7 @@ import (
 
 // billingBase hosts the Buddy-gas-station check-in and resource-package APIs.
 // It is a var (not const) so tests can override it with an httptest server.
-var billingBase = "https://www.codebuddy.cn"
-
-// billingBaseGlobal is the international (www.qoderwork.ai) billing base.
-var billingBaseGlobal = "https://www.qoderwork.ai"
+var billingBase = "https://openapi.qoder.com.cn"
 
 // If the panel later wants to surface "usage export ready", re-add it and wire
 // it into buildDashboardEx's response.
@@ -149,7 +146,6 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import a QoderWork PAT (pt-...) by exchanging it for a jobToken pair and persisting."},
-			{Method: http.MethodPost, Path: base + "/trial", Description: "Claim expert trial pack for one Global account (auth_index). One-time 250 credits / 14 days."},
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
@@ -203,8 +199,6 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportPAT(req)))
-	case req.Method == http.MethodPost && path == base+"/trial":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrial(req)))
 	case req.Method == http.MethodPost && path == base+"/select":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
@@ -338,7 +332,6 @@ func mutatingManagementPath(path string) bool {
 		base + "/checkin",
 		base + "/checkin/config",
 		base + "/import",
-		base + "/trial",
 		base + "/select",
 		base + "/keepalive":
 		return true

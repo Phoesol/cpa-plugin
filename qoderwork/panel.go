@@ -27,7 +27,6 @@ type wbAccount struct {
 	Selected     bool            `json:"selected"` // panel active routing card
 	Credits      *creditsSummary `json:"credits,omitempty"`
 	Checkin      *checkinSummary `json:"checkin,omitempty"`
-	TrialClaimed bool            `json:"trial_claimed,omitempty"` // Global: expert trial already claimed
 	Error        string          `json:"error,omitempty"`
 }
 
@@ -95,15 +94,14 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			}
 			acct.Nickname = sa.Account.Nickname
 			acct.UID = sa.Account.UID
-			acct.Region = accountRegion(sa)
+			acct.Region = "cn"
 			if fetchCredits {
 				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr
 				acct.Exhausted = isCreditsExhausted(cr)
-				if isGlobalDomain(sa.Auth.Domain) {
-					acct.TrialClaimed = hasTrialPack(cr)
+				if false {
 				}
 				// Keep note in sync (throttled); do not block dashboard on save errors.
 				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
@@ -116,8 +114,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
-						if isGlobalDomain(sa.Auth.Domain) {
-							acct.TrialClaimed = hasTrialPack(e.credits)
+						if false {
 						}
 					}
 				}
@@ -130,7 +127,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	var life []map[string]any
 	if force && lifecycleEnabled() {
 		life = reconcileAllAccounts(true)
-		// Drop accounts deleted during reconcile (Global exhaust) and refresh
+		// Drop accounts deleted during reconcile (CN exhaust) and refresh
 		// disabled/exhausted from disk/cache (host list may lag after save).
 		if files2, err2 := hostAuthList(); err2 == nil {
 			live := make(map[string]struct{}, len(files2))

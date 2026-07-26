@@ -1,14 +1,12 @@
 // keepalive.go implements proactive daily token refresh for qoderwork auths.
 //
-// Motivation: upstream (codebuddy.cn / qoderwork.ai) periodically kills
-// Keycloak offline sessions; once that happens the stored refresh token is
-// rejected with 12153 "Offline user session not found" and every billing /
-// chat call for the account returns a 401 HTML page (surfacing in the panel
-// as "parse failed: invalid character '<'"). Refreshing the access token
-// daily keeps the offline session alive, the same way a real client would.
+// Motivation: upstream (openapi.qoder.com.cn) issues jobTokens (24h) and
+// refreshTokens (48h). When they expire mid-flight, every billing and
+// inference call is rejected with TOKEN_EXPIRE. Refreshing daily (plus
+// PAT re-exchange fallback) keeps accounts alive automatically.
 //
-// Design:
 //   - Runs on the existing schedulerLoop at 22:00 local (keepaliveHours is
+//     separate from checkinHours so the two cadences can evolve independently).
 //     separate from checkinHours so the two cadences can evolve independently).
 //   - Iterates all qoderwork auths via host.auth.list/get, calls
 //     {realm-base}/v2/plugin/auth/token/refresh with X-Refresh-Token via
@@ -49,10 +47,13 @@ func keepaliveEnabled() bool {
 	return keepaliveAuto
 }
 
-// sessionDeadMarkers identify a server-side revoked offline session.
+// sessionDeadMarkers identify a server-side revoked / expired token.
+// QoderWork returns TOKEN_EXPIRE when jt- or jrt- is no longer valid;
+// QoderWork returns TOKEN_EXPIRE when jt- or jrt- is no longer valid.
 var sessionDeadMarkers = []string{
-	"Offline user session not found",
+	"TOKEN_EXPIRE",
 	"12153",
+	"Offline user session not found",
 }
 
 func isSessionDeadError(msg string) bool {
@@ -67,7 +68,7 @@ func isSessionDeadError(msg string) bool {
 // refreshCall posts to the upstream token/refresh endpoint and returns the
 // decoded envelope data plus the raw body (raw needed for error classification
 // — doJSON collapses 4xx bodies into "http_error: upstream NNN" and drops the
-// business code, e.g. 12153 "Offline user session not found").
+// business code, e.g. TOKEN_EXPIRE).
 //
 // v0.8.0: routed via host.http.do so request-log captures the call.
 // refreshCall refreshes the jobToken pair for one auth. Returns the response
@@ -113,7 +114,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 			if derr := markSessionDead(authIndex, authID, sa); derr != nil {
 				return "session-dead", fmt.Errorf("session dead; flag failed: %v", derr)
 			}
-			return "session-dead", fmt.Errorf("session dead (12153): flagged disabled")
+			return "session-dead", fmt.Errorf("session dead (TOKEN_EXPIRE): flagged disabled")
 		}
 		return "failed", fmt.Errorf("refresh rejected (HTTP %d): %s", status, truncateRedacted(err.Error(), 120))
 	}
@@ -175,7 +176,7 @@ func markSessionDead(authIndex, authID string, sa *storedAuth) error {
 		return err
 	}
 	doc["disabled"] = true
-	doc["note"] = "Session dead (12153): re-login required"
+	doc["note"] = "Session dead (TOKEN_EXPIRE): re-login required"
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		return err
@@ -246,7 +247,7 @@ func runTokenKeepalive() *keepaliveSummary {
 			// but the row should be populated even when refresh errors early.
 			if sa, err := hostAuthGet(f.AuthIndex); err == nil {
 				row.Nickname = sa.Account.Nickname
-				row.Region = accountRegion(sa)
+				row.Region = "cn"
 			}
 			status, err := refreshOneAuth(f.AuthIndex, f.ID)
 			row.Status = status
@@ -309,7 +310,7 @@ func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: accountRegion(sa)}
+	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: "cn"}
 	row.Status, err = refreshOneAuth(authIndex, "")
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)
