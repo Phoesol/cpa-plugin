@@ -258,21 +258,6 @@ func isPathUnder(path, dir string) bool {
 	return rel != "." && !strings.HasPrefix(rel, "..") && !strings.Contains(rel, string(filepath.Separator)+"..")
 }
 
-// deleteAuthFileAt removes a qoderwork auth file. Missing file is success.
-// Deprecated: use deleteAuthFileInDir instead (adds directory + absolute path
-// confinement). Retained for test coverage of the base safe-delete path.
-
-func deleteAuthFileAt(path string) error {
-	if !isSafeAuthPath(path) {
-		return fmt.Errorf("refusing to delete unsafe path: %s", path)
-	}
-	err := os.Remove(path)
-	if err != nil && os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
 // deleteAuthFileInDir is like deleteAuthFileAt but additionally requires the
 // path to be under dir. Use for lifecycle deletes where the auth directory is
 // known — prevents a malicious/buggy host path from deleting arbitrary files.
@@ -295,4 +280,3 @@ func deleteAuthFileInDir(path, dir string) error {
 	return err
 }
 
-// hostAuthGetFull returns physical JSON, path, and name for an auth index.

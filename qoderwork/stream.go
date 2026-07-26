@@ -216,42 +216,6 @@ func clientNeedsSSEFrame(metadata map[string]any) bool {
 	}
 }
 
-// aggregateSSEWithCollector reads an upstream SSE stream and emits one chunk
-// per data event. Empty tool-call shells are stripped and the trailing [DONE]
-// is dropped (the host appends its own stream terminator). When sseFramed is
-// true each payload is emitted as a "data: " line for cross-format
-// translators; otherwise the payload is the raw JSON object and the host
-// chat-completions writer adds the framing itself. A mid-stream read error
-// aborts collection and is returned so the caller records the attempt as
-// failed. The collector, when non-nil, observes raw upstream chunks for usage
-// extraction.
-func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	var chunks []pluginapi.ExecutorStreamChunk
-	for scanner.Scan() {
-		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
-			continue
-		}
-		if collector != nil {
-			collector.feed(content)
-		}
-		cleaned := cleanChunkJSON(content)
-		if cleaned == "" {
-			continue
-		}
-		if sseFramed {
-			cleaned = "data: " + cleaned
-		}
-		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: []byte(cleaned)})
-	}
-	if err := scanner.Err(); err != nil {
-		return chunks, fmt.Errorf("upstream stream read error: %w", err)
-	}
-	return chunks, nil
-}
-
 // cleanChunkJSON strips only the known-problematic empty tool-call shells
 // from choice deltas: a null/empty function_call and an empty tool_calls array
 // (QoderWork emits these on the terminal chunk, and strict clients interpret

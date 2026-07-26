@@ -116,22 +116,6 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 		if err != nil {
 			return
 		}
-		if false {
-			// CN: never check-in or auto-claim trial. Lifecycle only.
-			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
-			if v, ok := accountCache.Load(f.ID); ok {
-				if e, ok2 := v.(*accountCacheEntry); ok2 {
-					fresh := *e
-					fresh.credits = nil
-					fresh.fetched = time.Now()
-					accountCache.Store(f.ID, &fresh)
-				}
-			}
-			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
-			}
-			return
-		}
 		// CN: daily check-in when enabled.
 		ci, err := fetchCheckinStatus(sa)
 		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {

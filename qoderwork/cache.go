@@ -171,16 +171,3 @@ func pruneAccountCacheSoftCap(capN int) {
 	}
 }
 
-// cachedCheckinToday returns cached today_checked_in when present.
-func cachedCheckinToday(authID string) *bool {
-	v, ok := accountCache.Load(authID)
-	if !ok {
-		return nil
-	}
-	e, ok := v.(*accountCacheEntry)
-	if !ok || e == nil || e.checkin == nil {
-		return nil
-	}
-	b := e.checkin.TodayCheckedIn
-	return &b
-}

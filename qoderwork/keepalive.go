@@ -260,21 +260,6 @@ func runTokenKeepalive() *keepaliveSummary {
 	return sum
 }
 
-// nextKeepaliveTime mirrors nextCheckinTime but for keepaliveHours.
-func nextKeepaliveTime(now time.Time) time.Time {
-	var earliest time.Time
-	for _, h := range keepaliveHours {
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
-		if !t.After(now) {
-			t = t.Add(24 * time.Hour)
-		}
-		if earliest.IsZero() || t.Before(earliest) {
-			earliest = t
-		}
-	}
-	return earliest
-}
-
 // shouldRunKeepaliveNow reports whether the current local time is within
 // one hour after any scheduled keepalive hour today. Used by schedulerLoop
 // to fire keepalive on the same tick as checkin when the schedules coincide.

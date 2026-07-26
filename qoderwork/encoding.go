@@ -8,7 +8,6 @@ package main
 
 import (
 	"encoding/base64"
-	"fmt"
 	"strings"
 )
 
@@ -52,18 +51,3 @@ func qoderEncode(plain []byte) string {
 	return sb.String()
 }
 
-// qoderDecode reverses qoderEncode.
-func qoderDecode(encoded string) ([]byte, error) {
-	n := len(encoded)
-	mapped := make([]byte, n)
-	for i := 0; i < n; i++ {
-		c := encoded[i]
-		if c >= 128 || qoderC2S[c] == 0 {
-			return nil, fmt.Errorf("invalid char %q at %d", c, i)
-		}
-		mapped[i] = qoderC2S[c]
-	}
-	a := n / 3
-	std := string(mapped[n-a:]) + string(mapped[a:n-a]) + string(mapped[:a])
-	return base64.StdEncoding.DecodeString(std)
-}

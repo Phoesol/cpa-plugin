@@ -101,8 +101,6 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 				acct.Checkin = ci
 				acct.Credits = cr
 				acct.Exhausted = isCreditsExhausted(cr)
-				if false {
-				}
 				// Keep note in sync (throttled); do not block dashboard on save errors.
 				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
 				acct.Error = strings.Join(errs, "; ")
@@ -114,9 +112,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
-						if false {
 						}
-					}
 				}
 			}
 			out[i] = acct

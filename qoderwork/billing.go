@@ -5,7 +5,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,92 +13,12 @@ import (
 	"time"
 )
 
-// billingBaseFor returns the QoderWork OpenAPI base URL.
-func billingBaseFor(sa *storedAuth) string {
-	return billingBase
-}
-
-// -----------------------------------------------------------------------------
-// Billing / check-in API calls
-// -----------------------------------------------------------------------------
-
 func billingHeaders(req *http.Request, sa *storedAuth) {
 	// QoderWork billing endpoints authenticate with the jobToken (jt-) as a
 	// plain Bearer. No COSY signing required (KNOWLEDGE §2).
 	req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-}
-
-func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
-	data, err := billingCallOnce(sa, path, body)
-	for _, d := range billingRetryDelays {
-		if err == nil || !isTransientBillingErr(err) {
-			break
-		}
-		time.Sleep(d)
-		data, err = billingCallOnce(sa, path, body)
-	}
-	return data, err
-}
-
-// isTransientBillingErr reports whether err came from an upstream 5xx or a
-// transport failure (both retryable). 4xx and business-code errors are not.
-func isTransientBillingErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.HasPrefix(msg, "http 5") || strings.HasPrefix(msg, "http=5") || strings.Contains(msg, "status 5")
-}
-
-func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, error) {
-	var reader *bytes.Reader
-	if body != nil {
-		raw, _ := json.Marshal(body)
-		reader = bytes.NewReader(raw)
-	} else {
-		reader = bytes.NewReader([]byte("{}"))
-	}
-	base := billingBaseFor(sa)
-	req, err := http.NewRequest(http.MethodPost, base+path, reader)
-	if err != nil {
-		return nil, err
-	}
-	billingHeaders(req, sa)
-	// Route via host.http.do so request-log captures the call (v0.8.1 compliance:
-	// was sharedHTTPClient().Do — bypassed host transport policy + logging).
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return nil, err
-	}
-	raw := resp.Body
-	// Upstream 5xx is transient — classify it so billingCall can retry,
-	// and keep a redacted response body snippet for diagnosis (A-42).
-	if resp.StatusCode >= 500 {
-		snippet := strings.TrimSpace(redactSecrets(string(raw)))
-		if len(snippet) > 120 {
-			snippet = snippet[:120]
-		}
-		return nil, fmt.Errorf("http %d from %s: %s", resp.StatusCode, path, snippet)
-	}
-	var env apiEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		// parse failed usually means upstream returned a non-JSON error page
-		// (e.g. APISIX 401 HTML for session-dead). Include a redacted snippet
-		// so the panel / logs can surface the real cause instead of a bare
-		// "parse failed" (P0-2 UX: was impossible to distinguish session dead
-		// from a malformed response).
-		snippet := strings.TrimSpace(redactSecrets(string(raw)))
-		if len(snippet) > 120 {
-			snippet = snippet[:120]
-		}
-		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, snippet)
-	}
-	if env.Code != 0 {
-		return nil, fmt.Errorf("code=%d msg=%s", env.Code, truncateRedacted(env.Msg, 120))
-	}
-	return env.Data, nil
 }
 
 // checkinStatusResponse mirrors GET /sash/api/v1/me/daily-check-in/status
@@ -153,72 +72,6 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 		sum.TodayCredit = q.RewardCredits
 	}
 	return sum, nil
-}
-
-// packageRemainUsed picks current-cycle remain/used/size for one package.
-// Prefer cycle metrics whenever CycleCapacitySize is present; used = size−remain
-// so missing CycleCapacityUsed never under-reports consumption.
-// Fall back to lifetime Capacity* only when cycle fields are absent entirely.
-//
-// Daily check-in adds NEW packages (size grows) — capacity grant, not negative
-// consumption. Track consumption via used (size−remain), not via remain alone.
-func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
-	if a.CycleCapacitySize > 0 {
-		remain = a.CycleCapacityRemain
-		size = a.CycleCapacitySize
-		if remain < 0 {
-			remain = 0
-		}
-		if remain > size {
-			remain = size
-		}
-		used = size - remain
-		// If upstream reports a higher explicit used, trust the larger figure.
-		if a.CycleCapacityUsed > used {
-			used = a.CycleCapacityUsed
-			// Keep remain consistent when possible.
-			if size >= used {
-				remain = size - used
-			}
-		}
-		return remain, used, size
-	}
-	if a.CycleCapacityRemain > 0 || a.CycleCapacityUsed > 0 {
-		remain = a.CycleCapacityRemain
-		used = a.CycleCapacityUsed
-		// A-41: clamp negatives (branch1 already clamps; branch2/3 did not).
-		if remain < 0 {
-			remain = 0
-		}
-		if used < 0 {
-			used = 0
-		}
-		size = remain + used
-		if a.CapacitySize > size {
-			size = a.CapacitySize
-			if size >= remain {
-				used = size - remain
-			}
-		}
-		return remain, used, size
-	}
-	remain = a.CapacityRemain
-	used = a.CapacityUsed
-	size = a.CapacitySize
-	// A-41: lifetime branch also clamps negative remain/used.
-	if remain < 0 {
-		remain = 0
-	}
-	if used < 0 {
-		used = 0
-	}
-	if size <= 0 {
-		size = remain + used
-	}
-	if used == 0 && size > remain {
-		used = size - remain
-	}
-	return remain, used, size
 }
 
 // quotaUsageResponse mirrors GET /api/v2/quota/usage response (plain JSON,

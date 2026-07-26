@@ -17,35 +17,6 @@ import (
 //go:embed baseprompt.json
 var basepromptJSON []byte
 
-// qwModel describes one entry from the upstream model list.
-type qwModel struct {
-	Key             string  `json:"key"`
-	DisplayName     string  `json:"display_name"`
-	Format          string  `json:"format"`
-	Source          string  `json:"source"`
-	Enable          bool    `json:"enable"`
-	IsDefault       bool    `json:"is_default"`
-	IsVL            bool    `json:"is_vl"`
-	IsReasoning     bool    `json:"is_reasoning"`
-	PriceFactor     float64 `json:"price_factor"`
-	MaxInputTokens  int     `json:"max_input_tokens"`
-}
-
-// staticModels is the fallback list, mirrored from /root/qoderwork/models_list.json
-// (fetched 2026-07-26). Dynamic fetching can refresh this at runtime.
-var staticModels = []qwModel{
-	{Key: "auto", DisplayName: "Auto", Format: "openai", Source: "system", Enable: true, IsDefault: true, IsVL: true, IsReasoning: true, PriceFactor: 0.5, MaxInputTokens: 180000},
-	{Key: "qmodel_preview", DisplayName: "Qwen3.8-Max-Preview", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.05, MaxInputTokens: 180000},
-	{Key: "qmodel_latest", DisplayName: "Qwen3.7-Max", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.25, MaxInputTokens: 180000},
-	{Key: "qmodel", DisplayName: "Qwen3.7-Plus", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.1, MaxInputTokens: 180000},
-	{Key: "q36fmodel", DisplayName: "Qwen3.6-Flash", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.1, MaxInputTokens: 180000},
-	{Key: "dmodel", DisplayName: "DeepSeek-V4-Pro", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.5, MaxInputTokens: 180000},
-	{Key: "dfmodel", DisplayName: "DeepSeek-V4-Flash", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: false, PriceFactor: 0.1, MaxInputTokens: 180000},
-	{Key: "gm51model", DisplayName: "GLM-5.2", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.6, MaxInputTokens: 180000},
-	{Key: "kmodel", DisplayName: "Kimi-K2.7-Code", Format: "openai", Source: "system", Enable: true, IsVL: true, IsReasoning: true, PriceFactor: 0.3, MaxInputTokens: 180000},
-	{Key: "mmodel", DisplayName: "MiniMax-M2.7", Format: "openai", Source: "system", Enable: true, IsVL: false, IsReasoning: false, PriceFactor: 0.2, MaxInputTokens: 180000},
-}
-
 // cpaToUpstreamKey maps CPA-facing model names to upstream keys.
 // Unknown names pass through unchanged (server silently routes to auto).
 func cpaToUpstreamKey(cpaModel string) string {

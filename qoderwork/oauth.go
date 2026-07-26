@@ -28,41 +28,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// doJSON sends method to fullURL with the given headers, parses the
-// {code,msg,data} envelope, and returns the inner data payload. httpStatus
-// is the upstream HTTP code.
-func doJSON(client *http.Client, method, fullURL string, headers func(*http.Request), body io.Reader) (json.RawMessage, int, error) {
-	req, err := http.NewRequest(method, fullURL, body)
-	if err != nil {
-		return nil, 0, err
-	}
-	if headers != nil {
-		headers(req)
-	} else {
-		commonHeaders(req)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, resp.StatusCode, fmt.Errorf("http_error: upstream %d", resp.StatusCode)
-	}
-	if resp.StatusCode >= 300 {
-		return nil, resp.StatusCode, fmt.Errorf("http_error: upstream redirect %d (location: %s)", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	var env apiEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("parse failed: %w", err)
-	}
-	if env.Code != 0 {
-		return nil, resp.StatusCode, fmt.Errorf("code=%d msg=%s", env.Code, truncateRedacted(env.Msg, 120))
-	}
-	return env.Data, resp.StatusCode, nil
-}
-
 // jobTokenResponse mirrors the upstream /api/v1/jobToken/{exchange,refresh}
 // response payload.
 type jobTokenResponse struct {

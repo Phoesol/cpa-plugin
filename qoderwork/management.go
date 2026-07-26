@@ -64,30 +64,6 @@ type checkinSummary struct {
 	CheckinDates    []string `json:"checkin_dates,omitempty"`
 }
 
-// with a transient error (HTTP 5xx or transport error). openapi.qoder.com.cn
-// intermittently returns 500s; without a retry a single hiccup surfaces as a
-// panel error even though the very next request would succeed.
-var billingRetryDelays = []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
-
-// CapacityRemain/Used/Size         — lifetime package totals (Used often ≈0
-//
-//	for monthly-refresh free packs)
-//
-// CycleCapacityRemain/Used/Size    — the active billing cycle; Used is
-//
-//	sometimes omitted entirely
-type resourcePackage struct {
-	PackageName         string `json:"PackageName"`
-	CapacityRemain      int64  `json:"CapacityRemain"`
-	CapacityUsed        int64  `json:"CapacityUsed"`
-	CapacitySize        int64  `json:"CapacitySize"`
-	CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
-	CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
-	CycleCapacitySize   int64  `json:"CycleCapacitySize"`
-	CycleStartTime      string `json:"CycleStartTime"`
-	CycleEndTime        string `json:"CycleEndTime"`
-}
-
 // -----------------------------------------------------------------------------
 // Auto check-in scheduler (09:00 / 21:00 local)
 // -----------------------------------------------------------------------------

@@ -474,17 +474,6 @@ type apiEnvelope struct {
 // both use it. The old tokenData struct (camelCase tags) was wrong and has
 // been removed — QoderWork returns snake_case JSON.
 
-type accountData struct {
-	UID          string `json:"uid"`
-	EnterpriseID string `json:"enterpriseId"`
-	Nickname     string `json:"nickname"`
-}
-
-type authStateData struct {
-	State   string `json:"state"`
-	AuthURL string `json:"authUrl"`
-}
-
 func parseStored(raw []byte) (*storedAuth, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty auth storage")
@@ -531,22 +520,6 @@ func commonHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("User-Agent", clientUA)
-}
-
-// upstreamBaseFor returns the OpenAPI host. QoderWork only has CN, so this
-// is a single constant — the helper shape is kept to minimise diff against
-// the workbuddy skeleton (clean-room reference) (callers pass sa but it's ignored).
-func upstreamBaseFor(sa *storedAuth) string { return upstreamBaseCN }
-
-// backendHeaders applies auth-derived headers to a chat completion request.
-// For QoderWork this is the COSY-signed header set; the caller must have
-// already finalised the body because the signature is MD5(body).
-//
-// We keep the function signature (req, sa) for parity with the workbuddy
-// skeleton, but the actual signing happens in applyCosyHeaders below, which
-// the executor calls after the body is encoded.
-func backendHeaders(req *http.Request, sa *storedAuth) {
-	commonHeaders(req)
 }
 
 // applyCosyHeaders computes the full COSY-signed header set for one inference
