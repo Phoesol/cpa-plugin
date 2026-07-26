@@ -1273,6 +1273,10 @@ func schedulerLoop(stop chan struct{}) {
 // runAutoCheckin is the scheduled lifecycle tick (09:00 / 21:00).
 // CN: optional daily check-in, then reconcile (disable exhausted / reenable after credits).
 // Global: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
+//
+// v0.6.31: per-account work runs concurrently (sem=4) — was serial, so N accounts
+// meant 3N serial HTTP round-trips on the billing API. Matches the pattern used
+// by buildDashboardEx and handleManualCheckin.
 func runAutoCheckin() {
 	checkinAutoMu.RLock()
 	doCheckin := checkinAuto
@@ -1285,57 +1289,81 @@ func runAutoCheckin() {
 	if err != nil {
 		return
 	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
 	for _, f := range files {
-		// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
-		// let reconcileOneAccount do the single hostAuthGetBundle internally.
-		if doCheckin {
-			sa, err := hostAuthGet(f.AuthIndex)
-			if err != nil {
-				continue
-			}
-			if isGlobalDomain(sa.Auth.Domain) {
-				// Global: never check-in or auto-claim trial. Lifecycle only.
-				// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
-				if v, ok := accountCache.Load(f.ID); ok {
-					if e, ok2 := v.(*accountCacheEntry); ok2 {
-						fresh := *e
-						fresh.credits = nil
-						fresh.fetched = time.Now()
-						accountCache.Store(f.ID, &fresh)
-					}
+		f := f
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			processAutoCheckinAccount(f, doCheckin)
+		}()
+	}
+	wg.Wait()
+}
+
+// processAutoCheckinAccount handles one account's scheduled tick. Extracted so
+// runAutoCheckin can fan out per-account work without duplicating logic.
+func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
+	// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
+	// let reconcileOneAccount do the single hostAuthGetBundle internally.
+	if doCheckin {
+		sa, err := hostAuthGet(f.AuthIndex)
+		if err != nil {
+			return
+		}
+		if isGlobalDomain(sa.Auth.Domain) {
+			// Global: never check-in or auto-claim trial. Lifecycle only.
+			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
+			if v, ok := accountCache.Load(f.ID); ok {
+				if e, ok2 := v.(*accountCacheEntry); ok2 {
+					fresh := *e
+					fresh.credits = nil
+					fresh.fetched = time.Now()
+					accountCache.Store(f.ID, &fresh)
 				}
-				if lifecycleEnabled() {
-					_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
-				}
-				continue
-			}
-			// CN: daily check-in when enabled.
-			ci, err := fetchCheckinStatus(sa)
-			if err == nil && ci.Active && !ci.TodayCheckedIn {
-				_, _ = performCheckinCall(sa)
-			}
-			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-			if ci, _ := fetchCheckinStatus(sa); ci != nil {
-				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(f.ID); ok {
-					prev, _ = v.(*accountCacheEntry)
-				}
-				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-				if prev != nil {
-					entry.credits = prev.credits
-					entry.plan = prev.plan
-				}
-				accountCache.Store(f.ID, entry)
 			}
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 			}
-			continue
+			return
 		}
-		// Lifecycle-only (checkin off): reconcile handles its own get.
+		// CN: daily check-in when enabled.
+		ci, err := fetchCheckinStatus(sa)
+		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
+			if _, callErr := performCheckinCall(sa); callErr == nil {
+				// Refresh once after a successful checkin call so cache reflects
+				// the post-call state. If the status call fails keep the pre-call
+				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
+				// with a second fetch that could race with concurrent readers).
+				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+					ci = ci2
+				}
+			}
+		}
+		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
+		if ci != nil {
+			var prev *accountCacheEntry
+			if v, ok := accountCache.Load(f.ID); ok {
+				prev, _ = v.(*accountCacheEntry)
+			}
+			entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+			if prev != nil {
+				entry.credits = prev.credits
+				entry.plan = prev.plan
+			}
+			accountCache.Store(f.ID, entry)
+		}
 		if lifecycleEnabled() {
 			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 		}
+		return
+	}
+	// Lifecycle-only (checkin off): reconcile handles its own get.
+	if lifecycleEnabled() {
+		_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 	}
 }
 
@@ -1768,7 +1796,18 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 					"message": "already checked in today",
 				}}
 				// Keep checkin in cache so light-load dashboard shows 已签到.
-				accountCache.Store(c.authID, &accountCacheEntry{checkin: ci, fetched: time.Now()})
+				// Merge with prev entry so credits/plan aren't dropped on this
+				// fast path (v0.6.31 fix: early-already used to wipe them).
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(c.authID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(c.authID, entry)
 				if lifecycleEnabled() {
 					_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
 				}
