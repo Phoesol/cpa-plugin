@@ -30,10 +30,6 @@ on:
 permissions:
   contents: write
 
-env:
-  # Which plugin this run releases (empty = CI-only, build both).
-  RELEASE_PLUGIN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.plugin || (startsWith(github.ref, 'refs/tags/workbuddy-v') && 'workbuddy' || startsWith(github.ref, 'refs/tags/qoderwork-v') && 'qoderwork' || '') }}
-
 jobs:
   test:
     name: Test (${{ matrix.dir }})
@@ -287,7 +283,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release (${{ env.RELEASE_PLUGIN }})
+    name: Release
     # Only for a tag of a specific plugin, or dispatch with a version.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
