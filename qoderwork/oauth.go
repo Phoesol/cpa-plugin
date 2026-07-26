@@ -427,7 +427,10 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 }
 
 // buildStoredAuthFromDeviceToken maps a device-token grant onto storedAuth.
-// AccessToken=dt-, RefreshToken=drt-; PersonalToken stays empty (no PAT).
+// AccessToken=dt-, RefreshToken=drt-. When re-logging an account that already
+// has an auth file (e.g. a PAT-imported one), the existing PAT is PRESERVED
+// in PersonalToken — the two credential families coexist: OAuth tokens serve
+// traffic, the PAT remains as long-lived fallback for account recovery.
 func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoResponse) *storedAuth {
 	expiresAt := time.Now().Add(30 * 24 * time.Hour).Unix()
 	if tok.ExpiresIn > 0 {
@@ -443,21 +446,56 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 	}
 	return &storedAuth{
 		Auth: storedTokens{
-			AccessToken:  tok.accessToken(),
-			RefreshToken: tok.RefreshToken,
-			ExpiresAt:    expiresAt,
-			Domain:       "qoder.com.cn",
+			AccessToken:   tok.accessToken(),
+			RefreshToken:  tok.RefreshToken,
+			PersonalToken: existingPATForUID(uid), // coexist: keep prior PAT if any
+			ExpiresAt:     expiresAt,
+			Domain:        "qoder.com.cn",
 		},
 		Account: storedAccount{UID: uid, Nickname: nickname},
 	}
 }
 
-// handleRefreshAuth implements AuthProvider.Refresh. Two credential families:
+// existingPATForUID looks up an existing qoderwork auth file for the same
+// uid and returns its stored PAT (empty when none). Lets OAuth re-login
+// preserve the previously imported PAT instead of wiping it.
+func existingPATForUID(uid string) string {
+	if uid == "" {
+		return ""
+	}
+	files, err := hostAuthList()
+	if err != nil {
+		return ""
+	}
+	for _, f := range files {
+		if !strings.HasPrefix(strings.ToLower(f.Name), providerName+"-") {
+			continue
+		}
+		sa, err := hostAuthGet(f.AuthIndex)
+		if err != nil || sa == nil {
+			continue
+		}
+		if sa.Account.UID == uid && strings.HasPrefix(sa.Auth.PersonalToken, "pt-") {
+			return sa.Auth.PersonalToken
+		}
+	}
+	return ""
+}
+
+// handleRefreshAuth implements AuthProvider.Refresh. The two credential
+// families coexist in one auth file and are routed by TOKEN PREFIX, not by
+// the presence of a PAT — an OAuth account may ALSO carry a PAT for fallback:
 //
-//  1. Device-token accounts (OAuth login, PersonalToken == ""): POST
-//     /api/v1/deviceToken/refresh with the drt- — dt- ~30d, drt- ~1y.
-//  2. Legacy PAT-imported accounts (PersonalToken != ""): two-tier
-//     jrt- refresh (48h) → PAT re-exchange (long-lived).
+//  1. OAuth device family (refresh token starts with "drt-"): POST
+//     /api/v1/deviceToken/refresh — the device flow's own endpoint.
+//     The PAT (if any) is preserved untouched in the file.
+//  2. Legacy PAT family (refresh token starts with "jrt-", or a bare PAT):
+//     jrt- refresh → PAT re-exchange, as before.
+//
+// The previous PersonalToken-presence routing had a fatal flaw: once a PAT
+// coexisted, a device account was force-refreshed through the jobToken
+// endpoints, which reject drt- tokens, and the PAT fallback then OVERWROTE
+// the OAuth credential with a jobToken pair — destroying the OAuth session.
 func handleRefreshAuth(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthRefreshRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -468,8 +506,8 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
 
-	if sa.Auth.PersonalToken == "" {
-		// Device-token family.
+	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
+		// OAuth device family — deviceToken/refresh ONLY.
 		tok, err := refreshDeviceToken(sa.Auth.RefreshToken)
 		if err != nil {
 			return nil, fmt.Errorf("refresh rejected: %w — deviceToken refresh failed; re-login via OAuth required", err)
@@ -485,7 +523,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 
 	// Legacy PAT family: Tier 1 jrt- refresh → Tier 2 PAT re-exchange.
 	tok, err := refreshJobToken(sa.Auth.RefreshToken)
-	if err != nil {
+	if err != nil && sa.Auth.PersonalToken != "" {
 		// Tier 2: jrt- expired — fall back to PAT re-exchange.
 		tok, err = exchangePATForJobToken(sa.Auth.PersonalToken)
 	}

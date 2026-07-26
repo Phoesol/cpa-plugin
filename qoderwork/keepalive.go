@@ -64,24 +64,35 @@ func isSessionDeadError(msg string) bool {
 	return false
 }
 
-// refreshCall posts to the upstream token/refresh endpoint and returns the
-// decoded envelope data plus the raw body (raw needed for error classification
-// — doJSON collapses 4xx bodies into "http_error: upstream NNN" and drops the
-// business code, e.g. TOKEN_EXPIRE).
+// refreshCall refreshes the token pair for one auth, routing by credential
+// family:
+//   - device-token accounts (PersonalToken == "", drt- refresh token):
+//     POST /api/v1/deviceToken/refresh — the OAuth device flow's own endpoint.
+//   - legacy PAT accounts: POST /api/v1/jobToken/refresh with jrt-, falling
+//     back to jobToken/exchange with the PAT when the jrt- has expired.
 //
-// v0.8.0: routed via host.http.do so request-log captures the call.
-// refreshCall refreshes the jobToken pair for one auth. Returns the response
-// body (raw) + status. QoderWork uses POST /api/v1/jobToken/refresh with a
-// JSON body {refresh_token: "jrt-..."} — no envelope, no X-Refresh-Token header.
-// When jrt- refresh fails, falls back to PAT re-exchange if available.
+// Returns the decoded data + raw body + status (raw needed for error
+// classification — doRawJSON collapses 4xx bodies into a generic error and
+// drops the business code, e.g. TOKEN_EXPIRE).
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
-	// Try jrt- refresh first.
+	// Device family (drt-): use the device flow's own refresh endpoint.
+	// Routing is by token prefix, not PersonalToken presence — a PAT may
+	// coexist as fallback and must not hijack OAuth refreshes.
+	if strings.HasPrefix(sa.Auth.RefreshToken, "drt-") {
+		body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken})
+		data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
+		if err == nil {
+			return data, data, status, nil
+		}
+		return nil, nil, status, err
+	}
+	// Legacy PAT family: try jrt- refresh first.
 	body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken})
 	data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenRefresh, nil, bytes.NewReader(body))
 	if err == nil {
 		return data, data, status, nil
 	}
-	// Fallback: PAT re-exchange.
+	// Fallback: PAT re-exchange (only when a PAT is actually present).
 	if sa.Auth.PersonalToken != "" {
 		patBody, _ := json.Marshal(map[string]string{"personal_token": sa.Auth.PersonalToken})
 		data2, status2, err2 := doRawJSON(sharedHTTPClient(), http.MethodPost, endpointJobTokenExchange, nil, bytes.NewReader(patBody))
@@ -118,8 +129,18 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 		return "failed", fmt.Errorf("refresh rejected (HTTP %d): %s", status, truncateRedacted(err.Error(), 120))
 	}
 
+	// Parse both response shapes: jobToken refresh returns {"token":...},
+	// deviceToken refresh returns {"device_token":...} (or "token").
 	var tok jobTokenResponse
-	if err := json.Unmarshal(data, &tok); err != nil || tok.Token == "" {
+	_ = json.Unmarshal(data, &tok)
+	if tok.Token == "" {
+		var dt deviceTokenResponse
+		_ = json.Unmarshal(data, &dt)
+		tok.Token = dt.accessToken()
+		tok.RefreshToken = dt.RefreshToken
+		tok.ExpiresIn = dt.ExpiresIn
+	}
+	if tok.Token == "" {
 		return "failed", fmt.Errorf("refresh_failed: no token in response (raw=%s)", truncateRedacted(string(data), 200))
 	}
 	sa.Auth.AccessToken = tok.Token
