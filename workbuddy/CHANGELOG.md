@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.2
+
+### Concurrency + lifecycle hardening
+
+- `lifecycle.go` — P0-2: `reconcileOneAccount` now routes credits fetch
+  through `cachedAccountDetails(force=true)` so singleflight serializes
+  concurrent writers, eliminating a Load→Store race that could clobber
+  newer plan/checkin values.
+- `lifecycle.go` — P1-4: Global `lifecycleDelete` now requires a second
+  `fetchUserResource` confirmation before deleting. Prevents transient 402
+  from irreversibly removing an account.
+- `checkin.go` — P1-5: after a successful checkin the credits cache is
+  refreshed immediately (was only updating the checkin field). Panel now
+  shows updated balance without waiting for the async reconcile pass.
+- `cache.go` — P1-1 documented trade-off: force=true callers still join
+  singleflight (skipping would re-introduce P0-2).
+- `main.go` — P0-5: `scheduler_mode` ConfigField description now warns that
+  `off + lifecycle_auto=false` leaves exhausted accounts routable.
+
 ## 0.8.1
 
 ### Bug fixes + compliance polish
