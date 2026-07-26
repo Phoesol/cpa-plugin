@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -115,7 +116,9 @@ type checkinStatusResponse struct {
 }
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
-	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/status", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/status", nil)
 	if err != nil {
 		return nil, err
 	}
