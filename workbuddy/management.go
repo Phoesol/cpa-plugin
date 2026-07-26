@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -255,12 +256,9 @@ func readSecretFile(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// usageReportConfigured reports whether request-monitoring export is ready.
-func usageReportConfigured() bool {
-	usageReportMu.RLock()
-	defer usageReportMu.RUnlock()
-	return strings.TrimSpace(usageReportURL) != "" && strings.TrimSpace(usageReportKey) != ""
-}
+// usageReportConfigured was removed in v0.6.31 (dead code — never called).
+// If the panel later wants to surface "usage export ready", re-add it and wire
+// it into buildDashboardEx's response.
 
 // -----------------------------------------------------------------------------
 // Account listing via host auth callbacks
@@ -979,22 +977,12 @@ func pruneAccountCacheSoftCap(capN int) {
 	if len(items) <= capN {
 		return
 	}
-	// Sort oldest first
-	for i := 0; i < len(items); i++ {
-		for j := i + 1; j < len(items); j++ {
-			if items[j].at.Before(items[i].at) {
-				items[i], items[j] = items[j], items[i]
-			}
-		}
-	}
+	// Sort oldest first (was O(n²) bubble — sort.Slice is O(n log n)).
+	sort.Slice(items, func(i, j int) bool { return items[i].at.Before(items[j].at) })
 	drop := len(items) - capN
 	for i := 0; i < drop; i++ {
 		accountCache.Delete(items[i].key)
 	}
-}
-
-func buildDashboard(force bool) map[string]any {
-	return buildDashboardEx(force, true)
 }
 
 // buildDashboardEx builds the account dashboard. When fetchCredits is false,
