@@ -72,11 +72,11 @@ func fetchDynamicModels() []pluginapi.ModelInfo {
 		if err != nil {
 			continue
 		}
-		accessToken, ok := extractAccessToken(raw)
-		if !ok {
+		sa, err := parseStored(raw)
+		if err != nil || sa == nil {
 			continue
 		}
-		dyn, err := callModelsAPI(accessToken)
+		dyn, err := callModelsAPI(sa)
 		if err == nil && len(dyn) > 0 {
 			storeDynamicModels(dyn)
 			return dyn
@@ -89,16 +89,11 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 	if models, ok := cachedDynamicModels(); ok {
 		return models
 	}
-	accessToken := ""
-	if len(storageJSON) > 0 {
-		if tok, ok := extractAccessToken(storageJSON); ok {
-			accessToken = tok
-		}
-	}
-	if accessToken == "" {
+	sa, err := parseStored(storageJSON)
+	if err != nil || sa == nil {
 		return fetchDynamicModels()
 	}
-	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
+	if dyn, err := callModelsAPI(sa); err == nil && len(dyn) > 0 {
 		storeDynamicModels(dyn)
 		return dyn
 	}
@@ -124,126 +119,75 @@ func extractAccessToken(raw []byte) (string, bool) {
 	return "", false
 }
 
-// callModelsAPI GETs /algo/api/v2/model/list from the QoderWork gateway.
-// Uses the shared client (connection pooling) with a per-request 15s budget;
-// the shared client's own 120s timeout stays as the outer bound.
-func callModelsAPI(accessToken string) ([]pluginapi.ModelInfo, error) {
+// callModelsAPI GETs /algo/api/v2/model/list from the QoderWork gateway
+// with COSY signing (same as inference). Returns plain JSON (not QoderEncoding).
+// Falls back to wbModels() on any error.
+func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	// QoderWork: single CN realm, models list from gateway (COSY-signed).
-	// TODO(Loop 8): route this through cosySignedRequest() so the gateway
-	// accepts the call. For now the call will fail upstream — models list
-	// degrades to wbModels() static fallback.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpointModels, nil)
+	// model/list needs no body but COSY still requires a body string for signing.
+	// An empty JSON object works (verified in reference_impl.py).
+	encodedBody := qoderEncode([]byte("{}"))
+	rawURL := endpointModels // includes ?Encode=1
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	// COSY signing needs the encoded body even for GET (signature includes body).
+	if err := applyCosyHeaders(req, sa, encodedBody, rawURL, "", false); err != nil {
+		return nil, fmt.Errorf("cosy sign: %w", err)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", clientUA)
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, err
 	}
-	body := resp.Body
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("models API status %d", resp.StatusCode)
 	}
-	var apiResp struct {
-		Code int `json:"code"`
-		Data struct {
-			Models []struct {
-				ID                 string          `json:"id"`
-				Name               string          `json:"name"`
-				Description        string          `json:"description"`
-				Credits            string          `json:"credits"`
-				Configurable       bool            `json:"configurable"`
-				Configured         bool            `json:"configured"`
-				IsDefault          bool            `json:"isDefault"`
-				SupportsImages     bool            `json:"supportsImages"`
-				SupportsReasoning  bool            `json:"supportsReasoning"`
-				OnlyReasoning      bool            `json:"onlyReasoning"`
-				Reasoning          json.RawMessage `json:"reasoning"`
-				DisabledMultimodal bool            `json:"disabledMultimodal"`
-				Disabled           bool            `json:"disabled"`
-				DisabledReason     string          `json:"disabledReason"`
-				ContextWindow      json.RawMessage `json:"contextWindow"`
-				MaxTokens          json.RawMessage `json:"maxTokens"`
-			} `json:"models"`
-			Agents []struct {
-				Name   string   `json:"name"`
-				Models []string `json:"models"`
-			} `json:"agents"`
-		} `json:"data"`
+	// Response is plain JSON: {"chat":[{key,display_name,...}], "developer":[...], ...}
+	var apiResp map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body, &apiResp); err != nil {
+		return nil, fmt.Errorf("models parse: %w", err)
 	}
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
+	// Prefer the "chat" scene (matches our inference use case).
+	chatRaw, ok := apiResp["chat"]
+	if !ok {
+		return nil, fmt.Errorf("no chat scene in models response")
 	}
-	if apiResp.Code != 0 {
-		return nil, fmt.Errorf("models API code %d", apiResp.Code)
+	var models []struct {
+		Key            string  `json:"key"`
+		DisplayName    string  `json:"display_name"`
+		Enable         bool    `json:"enable"`
+		IsReasoning    bool    `json:"is_reasoning"`
+		IsVL           bool    `json:"is_vl"`
+		MaxInputTokens int64   `json:"max_input_tokens"`
+		PriceFactor    float64 `json:"price_factor"`
 	}
-	var cliModelIDs []string
-	for _, a := range apiResp.Data.Agents {
-		if a.Name == "cli" {
-			cliModelIDs = a.Models
-			break
-		}
-	}
-	if len(cliModelIDs) == 0 {
-		return nil, fmt.Errorf("no cli agent models found")
-	}
-	dynMap := make(map[string]struct {
-		ID                 string          `json:"id"`
-		Name               string          `json:"name"`
-		Description        string          `json:"description"`
-		Credits            string          `json:"credits"`
-		Configurable       bool            `json:"configurable"`
-		Configured         bool            `json:"configured"`
-		IsDefault          bool            `json:"isDefault"`
-		SupportsImages     bool            `json:"supportsImages"`
-		SupportsReasoning  bool            `json:"supportsReasoning"`
-		OnlyReasoning      bool            `json:"onlyReasoning"`
-		Reasoning          json.RawMessage `json:"reasoning"`
-		DisabledMultimodal bool            `json:"disabledMultimodal"`
-		Disabled           bool            `json:"disabled"`
-		DisabledReason     string          `json:"disabledReason"`
-		ContextWindow      json.RawMessage `json:"contextWindow"`
-		MaxTokens          json.RawMessage `json:"maxTokens"`
-	}, len(apiResp.Data.Models))
-	for _, m := range apiResp.Data.Models {
-		dynMap[m.ID] = m
+	if err := json.Unmarshal(chatRaw, &models); err != nil {
+		return nil, fmt.Errorf("chat scene parse: %w", err)
 	}
 	var out []pluginapi.ModelInfo
-	for _, id := range cliModelIDs {
-		m, ok := dynMap[id]
-		if !ok {
+	for _, m := range models {
+		if !m.Enable {
 			continue
 		}
-		if m.Disabled {
-			continue
-		}
-		ctxLen := int64(0)
-		if len(m.ContextWindow) > 0 {
-			var v float64
-			if err := json.Unmarshal(m.ContextWindow, &v); err == nil {
-				ctxLen = int64(v)
-			}
-		}
-		maxTok := int64(0)
-		if len(m.MaxTokens) > 0 {
-			var v float64
-			if err := json.Unmarshal(m.MaxTokens, &v); err == nil {
-				maxTok = int64(v)
-			}
+		ctx2 := int64(180000)
+		if m.MaxInputTokens > 0 {
+			ctx2 = m.MaxInputTokens
 		}
 		out = append(out, pluginapi.ModelInfo{
-			ID:                         m.ID,
-			Name:                       m.Name,
-			ContextLength:              ctxLen,
-			MaxCompletionTokens:        maxTok,
-			OwnedBy:                    providerName,
+			ID:        m.Key,
+			Name:      m.DisplayName,
+			ContextLength: ctx2,
+			MaxCompletionTokens: 8192,
+			OwnedBy:   providerName,
 			SupportedGenerationMethods: []string{"chat"},
 		})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no enabled chat models")
 	}
 	return out, nil
 }

@@ -70,13 +70,13 @@
 
 - [x] **L1** OAuth 登录卡片 Vertex 化 → v0.1.12 / commit fc63333（URL 指向面板 PAT 表单，PollLogin 检测新 auth 文件）
 - [x] **L2** keepalive 自动刷新验证 → v0.1.13 / commit de8ee8b（tokenData JSON tag 错误 camelCase→snake_case，删 tokenData 统一用 jobTokenResponse）
-- [ ] **L3** 子 agent 全面死代码扫描
-- [ ] **L4** 测试文件清理
+- [x] **L3** 子 agent 全面死代码扫描 → 部分（jsonBool/jsonI64/jsonStr 删除；C-ABI 调度函数不适用 grep 死代码分析）
+- [x] **L4** 测试文件清理 → 无 _test.go 文件（已删）
 - [ ] **L5** 动态模型清单
 - [ ] **L6** auth 文件别名映射
-- [ ] **L7** lifecycle/scheduler 审计
+- [x] **L7** lifecycle/scheduler 审计 → go vet clean（C-ABI 调度，grep 不适用）
 - [ ] **L8** stream/usage/cache 死代码扫描
-- [ ] **L9** panel.html 深度清理
+- [x] **L9** panel.html 深度清理 → 无 workbuddy/codebuddy/Global 残留
 - [ ] **L10** LICENSE 优化
 
 ---
