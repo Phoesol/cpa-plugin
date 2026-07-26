@@ -113,48 +113,53 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	return env.Data, nil
 }
 
+// checkinStatusResponse mirrors GET /sash/api/v1/me/daily-check-in/status
+// (plain JSON, no envelope).
+type checkinStatusResponse struct {
+	Status             string `json:"status"` // CLAIMABLE | CLAIMED
+	RewardCredits      int64  `json:"rewardCredits"`
+	NextClaimAt        int64  `json:"nextClaimAt"`        // s epoch
+	CurrentStreakDays  int64  `json:"currentStreakDays"`
+	TotalClaimDays     int64  `json:"totalClaimDays"`
+	TotalRewardCredits int64  `json:"totalRewardCredits"`
+	LastClaimedAt      int64  `json:"lastClaimedAt"`      // s epoch
+	RewardExpiresAt    int64  `json:"rewardExpiresAt"`    // s epoch
+}
+
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
-	var data json.RawMessage
-	var lastErr error
-	for _, path := range []string{"/sash/api/v1/me/daily-check-in/status"} {
-		d, err := billingCall(sa, path, nil)
-		if err == nil {
-			data = d
-			lastErr = nil
-			break
-		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
+	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/status", nil)
+	if err != nil {
 		return nil, err
 	}
-	sum := &checkinSummary{
-		Active:          jsonBool(m, "active", "Active"),
-		TodayCheckedIn:  jsonBool(m, "today_checked_in", "todayCheckedIn"),
-		StreakDays:      jsonI64(m, "streak_days", "streakDays"),
-		DailyCredit:     jsonI64(m, "daily_credit", "dailyCredit"),
-		TodayCredit:     jsonI64(m, "today_credit", "todayCredit"),
-		TotalCredits:    jsonI64(m, "total_credits", "totalCredits"),
-		WeekCheckinDays: jsonI64(m, "week_checkin_days", "weekCheckinDays"),
-		ActivityName:    jsonStr(m, "activity_name", "activityName"),
-		Season:          jsonI64(m, "season", "season"),
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil {
+		return nil, err
 	}
-	if dates, ok := m["checkin_dates"].([]any); ok {
-		for _, d := range dates {
-			if s, ok := d.(string); ok {
-				sum.CheckinDates = append(sum.CheckinDates, s)
-			}
-		}
-	} else if dates, ok := m["checkinDates"].([]any); ok {
-		for _, d := range dates {
-			if s, ok := d.(string); ok {
-				sum.CheckinDates = append(sum.CheckinDates, s)
-			}
-		}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("checkin status http %d body=%s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))
+	}
+	var q checkinStatusResponse
+	if err := json.Unmarshal(resp.Body, &q); err != nil {
+		return nil, fmt.Errorf("checkin status parse: %w", err)
+	}
+	today := time.Now().Format("2006-01-02")
+	lastClaimed := ""
+	if q.LastClaimedAt > 0 {
+		lastClaimed = time.Unix(q.LastClaimedAt, 0).Format("2006-01-02")
+	}
+	sum := &checkinSummary{
+		Active:          q.Status == "CLAIMABLE" || q.Status == "CLAIMED",
+		TodayCheckedIn:  q.Status == "CLAIMED" && lastClaimed == today,
+		StreakDays:      q.CurrentStreakDays,
+		DailyCredit:     q.RewardCredits,
+		TodayCredit:     0,
+		TotalCredits:    q.TotalRewardCredits,
+		WeekCheckinDays: q.TotalClaimDays,
+		ActivityName:    "每日签到",
+	}
+	if sum.TodayCheckedIn {
+		sum.TodayCredit = q.RewardCredits
 	}
 	return sum, nil
 }
@@ -225,112 +230,118 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
+// quotaUsageResponse mirrors GET /api/v2/quota/usage response (plain JSON,
+// no envelope). Both userQuota (base credits) and addOnQuota (one-time pro
+// upgrade + checkin packs) are summed for the panel.
+type quotaUsageResponse struct {
+	UserID               string `json:"userId"`
+	UserType             string `json:"userType"`
+	UsageType            string `json:"usageType"`
+	TotalUsagePercentage float64 `json:"totalUsagePercentage"`
+	IsQuotaExceeded      bool   `json:"isQuotaExceeded"`
+	ExpiresAt            int64  `json:"expiresAt"` // ms epoch
+	UpgradeURL           string `json:"upgradeUrl"`
+	UserQuota            struct {
+		Total     float64 `json:"total"`
+		Used      float64 `json:"used"`
+		Remaining float64 `json:"remaining"`
+		Unit      string  `json:"unit"`
+	} `json:"userQuota"`
+	AddOnQuota struct {
+		Total     float64 `json:"total"`
+		Used      float64 `json:"used"`
+		Remaining float64 `json:"remaining"`
+	} `json:"addOnQuota"`
+}
+
+// fetchUserResource queries QoderWork's quota endpoint and aggregates base +
+// add-on credits into the panel's creditsSummary shape.
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
-	now := time.Now()
-	// Status 0=active, 3=exhausted-but-still-listed. PageSize 100 covers the
-	// multi-pack free accounts we see in production; paginate if TotalCount
-	// ever exceeds it.
-	const pageSize = 100
-	body := map[string]any{
-		"PageNumber":               1,
-		"PageSize":                 pageSize,
-		"ProductCode":              "p_tcaca",
-		"Status":                   []int{0, 3},
-		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
-		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
-	}
-	data, err := billingCall(sa, "/api/v2/quota/usage", body)
+	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/api/v2/quota/usage", nil)
 	if err != nil {
 		return nil, err
 	}
-	var resp struct {
-		Response struct {
-			Data struct {
-				TotalCount  int64             `json:"TotalCount"`
-				TotalDosage int64             `json:"TotalDosage"` // package capacity pool, NOT consumption
-				Accounts    []resourcePackage `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil {
 		return nil, err
 	}
-	// Aggregate ALL packages (体验版 + 多个签到/裂变包 + 其它赠送包).
-	// Remain = currently spendable. Used = consumed this cycle. Size = capacity.
-	// Daily check-in adds packages → Size and Remain go UP; that is grant, not usage.
-	sum := &creditsSummary{}
-	for _, a := range resp.Response.Data.Accounts {
-		remain, used, size := packageRemainUsed(a)
-		sum.TotalRemain += remain
-		sum.TotalUsed += used
-		sum.TotalSize += size
-		sum.Packages = append(sum.Packages, packageSummary{
-			Name:       a.PackageName,
-			Remain:     remain,
-			Used:       used,
-			Size:       size,
-			CycleStart: a.CycleStartTime,
-			CycleEnd:   a.CycleEndTime,
-		})
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("quota/usage http %d body=%s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))
 	}
-	sum.PackCount = len(sum.Packages)
-	// Reconcile used with size-remain so UI totals always add up when size known.
-	if sum.TotalSize > 0 {
-		derived := sum.TotalSize - sum.TotalRemain
-		if derived < 0 {
-			derived = 0
-		}
-		// Prefer the larger of reported-used vs size-remain (never under-report spend).
-		if derived > sum.TotalUsed {
-			sum.TotalUsed = derived
-		}
+	var q quotaUsageResponse
+	if err := json.Unmarshal(resp.Body, &q); err != nil {
+		return nil, fmt.Errorf("quota/usage parse: %w", err)
 	}
-	// Upstream TotalDosage is the capacity pool (~sum of package sizes), not spend.
-	// Use it only as a size floor when pack sizes look incomplete.
-	if dosage := resp.Response.Data.TotalDosage; dosage > sum.TotalSize {
-		sum.TotalSize = dosage
-		derived := sum.TotalSize - sum.TotalRemain
-		if derived < 0 {
-			derived = 0
-		}
-		if derived > sum.TotalUsed {
-			sum.TotalUsed = derived
-		}
+	sum := &creditsSummary{
+		TotalRemain: int64(q.UserQuota.Remaining + q.AddOnQuota.Remaining),
+		TotalUsed:   int64(q.UserQuota.Used + q.AddOnQuota.Used),
+		TotalSize:   int64(q.UserQuota.Total + q.AddOnQuota.Total),
+		PackCount:   2,
+		Packages: []packageSummary{
+			{Name: "基础额度", Remain: int64(q.UserQuota.Remaining), Used: int64(q.UserQuota.Used), Size: int64(q.UserQuota.Total)},
+			{Name: "赠送/签到额度", Remain: int64(q.AddOnQuota.Remaining), Used: int64(q.AddOnQuota.Used), Size: int64(q.AddOnQuota.Total)},
+		},
 	}
-	_ = resp.Response.Data.TotalCount
 	return sum, nil
 }
 
+// planResponse mirrors GET /api/v2/user/plan (plain JSON, no envelope).
+type planResponse struct {
+	UserType        string `json:"user_type"`
+	PlanTierName    string `json:"plan_tier_name"`
+	IsPersonal      bool   `json:"is_personal_version"`
+	IsPaid          bool   `json:"is_paid_plan"`
+	IsHighestTier   bool   `json:"is_highest_tier"`
+	FeatureAllowed  map[string]bool `json:"feature_allowed"`
+	StartDate       int64  `json:"start_date"` // ms epoch
+	EndDate         int64  `json:"end_date"`   // ms epoch
+}
+
 func fetchPaymentType(sa *storedAuth) string {
-	data, err := billingCall(sa, "/api/v2/user/plan", nil)
+	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/api/v2/user/plan", nil)
 	if err != nil {
 		return ""
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil || resp.StatusCode >= 400 {
 		return ""
 	}
-	if s, ok := m["paymentType"].(string); ok {
-		return s
+	var p planResponse
+	if err := json.Unmarshal(resp.Body, &p); err != nil {
+		return ""
 	}
-	return ""
+	// Prefer plan_tier_name (e.g. "Pro Trial") over the raw user_type string.
+	if p.PlanTierName != "" {
+		return p.PlanTierName
+	}
+	return p.UserType
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/sash/api/v1/me/daily-check-in/claim", nil)
+	req, err := http.NewRequest(http.MethodPost, upstreamBaseCN+"/sash/api/v1/me/daily-check-in/claim", strings.NewReader("{}"))
 	if err != nil {
-		// billingCall returns business errors (code != 0) as Go errors; surface
-		// them as a structured result so the panel can show "already checked in".
-		return map[string]any{"success": false, "message": err.Error()}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	// Explicitly set success as bool — upstream may return "true" (string)
-	// which would cause downstream `out["success"] == true` to fail silently
-	// (P1-2 logic bug: type mismatch on success field).
-	m["success"] = true
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil {
+		return map[string]any{"success": false, "message": err.Error()}, nil
+	}
+	if resp.StatusCode >= 400 {
+		return map[string]any{"success": false, "message": fmt.Sprintf("http %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(resp.Body, &m); err != nil {
+		return nil, err
+	}
+	// QoderWork checkin claim returns {"success":true, "rewardCredits":100,...}
+	// on success, or {"success":false,"error":"..."} on already-claimed.
+	// Normalise to the panel's expected shape (bool success).
+	if _, ok := m["success"]; !ok {
+		m["success"] = true
+	}
 	return m, nil
 }
 
