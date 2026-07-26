@@ -1,45 +1,44 @@
 # CPA 插件仓库
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy** OAuth Provider。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy** 与 **QoderWork (CN)** 两个 OAuth Provider。
 
 ## 插件
 
 | ID | 说明 | 源码 |
 |---|---|---|
-| `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、签到、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
+| `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、CN 每日签到、Global 专家包、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
+| `qoderwork` | QoderWork CN（qoder.com.cn）：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日签到、积分面板、token 保活 | [qoderwork/](qoderwork/) |
 
-## 多架构 Release（回应 [issue #1](https://github.com/Sliverkiss/cpa-plugin/issues/1)）
+## 多架构 Release
 
-每个版本 GitHub Release 提供 CPA 插件商店标准产物：
+每个版本 GitHub Release 提供 CPA 插件商店标准产物（两个插件同版本同矩阵）：
 
 ```text
-workbuddy_<version>_linux_amd64.zip     # zip 根目录: workbuddy.so
-workbuddy_<version>_linux_arm64.zip
-workbuddy_<version>_darwin_amd64.zip    # workbuddy.dylib
-workbuddy_<version>_darwin_arm64.zip
-workbuddy_<version>_windows_amd64.zip   # workbuddy.dll
-workbuddy_<version>_windows_arm64.zip
-workbuddy_<version>_freebsd_amd64.zip
+<id>_<version>_linux_amd64.zip      # zip 根目录: <id>.so
+<id>_<version>_linux_arm64.zip
+<id>_<version>_darwin_amd64.zip     # <id>.dylib
+<id>_<version>_darwin_arm64.zip
+<id>_<version>_windows_amd64.zip    # <id>.dll
+<id>_<version>_windows_arm64.zip
+<id>_<version>_freebsd_amd64.zip
 checksums.txt
 ```
 
-命名规则与官方一致：`ArchiveName(id, version, goos, goarch) = {id}_{version}_{goos}_{goarch}.zip`  
+命名规则与官方一致：`ArchiveName(id, version, goos, goarch) = {id}_{version}_{goos}_{goarch}.zip`
 （见 CLIProxyAPI `internal/pluginstore`）。
 
-CI：push / tag `v*` / PR 触发 `.github/workflows/build.yml`。
+CI：push / tag `v*` / PR 触发 `.github/workflows/build.yml`（双插件矩阵构建，tag 时双插件同版本发 Release）。
 
 ## 安装（linux/amd64 示例）
 
 ```bash
 # 从 Release 下载
-unzip workbuddy_0.4.1_linux_amd64.zip
+unzip qoderwork_0.2.6_linux_amd64.zip
 # 扁平 plugins 目录（常见 docker 挂载）
-cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
+cp qoderwork.so /path/to/cliproxyapi/plugins/qoderwork.so
 # 或平台子目录布局
-# mkdir -p plugins/linux/amd64 && cp workbuddy.so plugins/linux/amd64/
+# mkdir -p plugins/linux/amd64 && cp qoderwork.so plugins/linux/amd64/
 ```
-
-`config.yaml`：
 
 ```yaml
 plugins:
@@ -48,43 +47,16 @@ plugins:
   configs:
     workbuddy:
       enabled: true
-      # checkin_auto: true
-      # scheduler_mode: off   # or credits
+    qoderwork:
+      enabled: true
 ```
 
-重启 CPA 后：
+## 远程更新（插件商店自定义源）
 
-1. 管理端 **OAuth / 登录** 选择 WorkBuddy（或面板导入凭证 JSON）
-2. 凭证默认写入 CPA `auths/workbuddy-<uid>.json`
-3. `/v1/models` 会出现 workbuddy 动态模型（如 `deepseek-v4-flash`、`glm-5.2`、`kimi-k2.7`、`hy3` 等，以账号权限为准）
-4. 面板：`/v0/resource/plugins/workbuddy/panel`
-
-更细说明见 [workbuddy/README.md](workbuddy/README.md)。
-
-## 远程更新（插件源 registry）
-
-仓库根目录提供 CPA 插件商店可消费的源：
+CPA 插件商店源添加：
 
 ```text
 https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
 ```
 
-在 CPA / CPAMP **插件商店 → 来源** 中添加该 URL，即可搜索安装 / 更新 `workbuddy`（`install` 类型为默认 `github-release`，从本仓库 Releases 拉 zip）。
-
-校验：
-
-```bash
-python3 scripts/validate-registry.py registry.json
-```
-
-## 本地构建
-
-```bash
-cd workbuddy
-make test && make vet && make build VERSION=$(cat VERSION)
-# dist/workbuddy.so （当前主机架构）
-```
-
-## 许可证
-
-各插件目录内 LICENSE（WorkBuddy：MIT）。
+然后在商店 UI 安装/更新 **workbuddy** 和 **qoderwork**。

@@ -1,14 +1,17 @@
-# Multi-arch CPA plugin build & release for WorkBuddy.
+# Multi-arch CPA plugin build & release (workbuddy + qoderwork).
 # Asset naming matches CLIProxyAPI pluginstore ArchiveName():
-#   workbuddy_<version>_<goos>_<goarch>.zip
-# Zip root must contain: workbuddy.so | workbuddy.dylib | workbuddy.dll
+#   <id>_<version>_<goos>_<goarch>.zip
+# Zip root must contain: <id>.so | <id>.dylib | <id>.dll
 # Plus: checksums.txt
 #
-# Platforms (aligned with official CPA plugins e.g. jshandler):
+# Platforms (aligned with official CPA plugins):
 #   linux/amd64, linux/arm64
 #   darwin/amd64, darwin/arm64
-#   windows/amd64, windows/arm64
-#   freebsd/amd64
+#   windows/amd64, windows/arm64 (via go-cross)
+#   freebsd/amd64 (via go-cross)
+#
+# Release trigger: tag 'v*' (builds BOTH plugins at that version)
+# or workflow_dispatch with explicit version.
 
 name: Build
 
@@ -20,30 +23,32 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version without v (empty = workbuddy/VERSION or tag)"
+        description: "Version without v (empty = per-plugin VERSION file or tag)"
         required: false
         default: ""
 
 permissions:
   contents: write
 
-env:
-  PLUGIN_ID: workbuddy
-  PLUGIN_DIR: workbuddy
-
 jobs:
   test:
-    name: Test
+    name: Test (${{ matrix.dir }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dir: workbuddy
+          - dir: qoderwork
     defaults:
       run:
-        working-directory: workbuddy
+        working-directory: ${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: workbuddy/go.mod
-          cache-dependency-path: workbuddy/go.sum
+          go-version-file: ${{ matrix.dir }}/go.mod
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
       - name: Validate registry.json
         working-directory: .
         run: python3 scripts/validate-registry.py registry.json
@@ -53,43 +58,75 @@ jobs:
         run: go vet ./...
 
   build:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: ${{ matrix.id }} ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
+          # workbuddy
+          - id: workbuddy
+            goos: linux
             goarch: amd64
             runner: ubuntu-24.04
             ext: so
-          - goos: linux
+          - id: workbuddy
+            goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm
             ext: so
-          - goos: darwin
+          - id: workbuddy
+            goos: darwin
             goarch: amd64
             runner: macos-15-intel
             ext: dylib
-          - goos: darwin
+          - id: workbuddy
+            goos: darwin
             goarch: arm64
             runner: macos-15
             ext: dylib
-          - goos: windows
+          - id: workbuddy
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
+          # qoderwork
+          - id: qoderwork
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: qoderwork
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: qoderwork
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: qoderwork
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: qoderwork
+            goos: windows
             goarch: amd64
             runner: windows-2025
             ext: dll
     defaults:
       run:
         shell: bash
-        working-directory: workbuddy
+        working-directory: ${{ matrix.id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: workbuddy/go.mod
-          cache-dependency-path: workbuddy/go.sum
+          go-version-file: ${{ matrix.id }}/go.mod
+          cache-dependency-path: ${{ matrix.id }}/go.sum
 
       - name: Resolve release metadata
         working-directory: .
@@ -100,18 +137,16 @@ jobs:
           elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="$(tr -d ' \n\r' < workbuddy/VERSION)"
-            # Non-release CI builds still produce named artifacts for testing.
+            VERSION="$(tr -d ' \n\r' < ${{ matrix.id }}/VERSION)"
             if [[ "${GITHUB_REF_TYPE:-}" != "tag" && "${{ github.event_name }}" != "workflow_dispatch" ]]; then
               VERSION="${VERSION}+ci.${GITHUB_RUN_NUMBER}"
             fi
           fi
-          # pluginstore version pattern: no leading 'v'; keep + only for CI
           CLEAN_VERSION="${VERSION%%+*}"
           echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
-          echo "LIB_NAME=${PLUGIN_ID}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
-          echo "ARCHIVE_NAME=${PLUGIN_ID}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
-          echo "version=${CLEAN_VERSION} archive=${PLUGIN_ID}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          echo "LIB_NAME=${{ matrix.id }}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=${{ matrix.id }}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
+          echo "version=${CLEAN_VERSION} archive=${{ matrix.id }}_${CLEAN_VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
 
       - name: Build shared library
         run: |
@@ -121,7 +156,7 @@ jobs:
             go build -trimpath -buildmode=c-shared \
               -ldflags "-s -w -X main.version=${VERSION}" \
               -o "dist/${LIB_NAME}" .
-          rm -f "dist/${PLUGIN_ID}.h" dist/*.h || true
+          rm -f "dist/${{ matrix.id }}.h" dist/*.h || true
           file "dist/${LIB_NAME}" || true
 
       - name: Package plugin (CPA ArchiveName)
@@ -129,20 +164,18 @@ jobs:
         run: |
           set -euo pipefail
           go run ./.github/scripts/package-release.go \
-            -library "workbuddy/dist/${LIB_NAME}" \
+            -library "${{ matrix.id }}/dist/${LIB_NAME}" \
             -archive "${ARCHIVE_NAME}" \
             -checksum "${ARCHIVE_NAME}.sha256"
-          ls -la "${ARCHIVE_NAME}" "${ARCHIVE_NAME}.sha256"
-          # Sanity: zip root entry is bare library name
           python3 - <<'PY'
           import zipfile, os, sys
           name = os.environ["ARCHIVE_NAME"]
           lib = os.environ["LIB_NAME"]
           with zipfile.ZipFile(name) as z:
-            names = z.namelist()
-            print("zip entries:", names)
-            if lib not in names:
-              sys.exit(f"zip root missing {lib}: {names}")
+              names = z.namelist()
+              print("zip entries:", names)
+              if lib not in names:
+                  sys.exit(f"zip root missing {lib}: {names}")
           PY
 
       - name: Upload build artifact
@@ -154,10 +187,26 @@ jobs:
             ${{ env.ARCHIVE_NAME }}.sha256
           if-no-files-found: error
 
-  build-windows-arm64:
-    name: Build windows/arm64
+  build-cross:
+    name: ${{ matrix.id }} ${{ matrix.target }} (go-cross)
     needs: test
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: workbuddy
+            target: windows-arm64
+            ext: dll
+          - id: workbuddy
+            target: freebsd-amd64
+            ext: so
+          - id: qoderwork
+            target: windows-arm64
+            ext: dll
+          - id: qoderwork
+            target: freebsd-amd64
+            ext: so
     defaults:
       run:
         shell: bash
@@ -165,8 +214,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: workbuddy/go.mod
-          cache-dependency-path: workbuddy/go.sum
+          go-version-file: ${{ matrix.id }}/go.mod
+          cache-dependency-path: ${{ matrix.id }}/go.sum
 
       - name: Resolve release metadata
         id: meta
@@ -177,115 +226,45 @@ jobs:
           elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="$(tr -d ' \n\r' < workbuddy/VERSION)"
-            if [[ "${GITHUB_REF_TYPE:-}" != "tag" && "${{ github.event_name }}" != "workflow_dispatch" ]]; then
-              VERSION="${VERSION%%+*}"
-            fi
+            VERSION="$(tr -d ' \n\r' < ${{ matrix.id }}/VERSION)"
+            VERSION="${VERSION%%+*}"
           fi
           CLEAN_VERSION="${VERSION%%+*}"
+          GOOS="${{ matrix.target }}"
+          GOARCH_PART="${GOOS#*-}"
+          GOOS_PART="${GOOS%-*}"
           echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "ARCHIVE_NAME=${PLUGIN_ID}_${CLEAN_VERSION}_windows_arm64.zip" >> "${GITHUB_ENV}"
+          echo "ARCHIVE_NAME=${{ matrix.id }}_${CLEAN_VERSION}_${GOOS_PART}_${GOARCH_PART}.zip" >> "${GITHUB_ENV}"
+          echo "LIB_NAME=${{ matrix.id }}.${{ matrix.ext }}" >> "${GITHUB_ENV}"
 
-      - name: Build Windows ARM64 shared library
+      - name: Build cross shared library
         timeout-minutes: 45
         uses: go-cross/cgo-actions@v1
         env:
           GOFLAGS: -trimpath -buildmode=c-shared
         with:
-          dir: workbuddy
+          dir: ${{ matrix.id }}
           packages: .
-          targets: windows-arm64
-          out-dir: dist/windows-arm64
-          output: ${{ env.PLUGIN_ID }}.dll
+          targets: ${{ matrix.target }}
+          out-dir: dist/${{ matrix.target }}
+          output: ${{ env.LIB_NAME }}
           flags: -ldflags=-s -w
           x-flags: main.version=${{ steps.meta.outputs.version }}
 
       - name: Package plugin
         run: |
           set -euo pipefail
-          rm -f go-cross-bin.h "workbuddy/dist/windows-arm64/${PLUGIN_ID}.h" || true
-          # cgo-actions may write under workbuddy/dist or ./dist depending on dir
+          rm -f go-cross-bin.h "${{ matrix.id }}/dist/${{ matrix.target }}/${{ matrix.id }}.h" || true
           LIB=""
           for p in \
-            "workbuddy/dist/windows-arm64/${PLUGIN_ID}.dll" \
-            "dist/windows-arm64/${PLUGIN_ID}.dll" \
-            "workbuddy/dist/${PLUGIN_ID}.dll"; do
+            "${{ matrix.id }}/dist/${{ matrix.target }}/${LIB_NAME}" \
+            "dist/${{ matrix.target }}/${LIB_NAME}" \
+            "${{ matrix.id }}/dist/${LIB_NAME}"; do
             if [ -f "$p" ]; then LIB="$p"; break; fi
           done
           if [ -z "$LIB" ]; then
-            echo "library not found"; find . -name '*.dll' | head
-            exit 1
-          fi
-          go run ./.github/scripts/package-release.go \
-            -library "${LIB}" \
-            -archive "${ARCHIVE_NAME}" \
-            -checksum "${ARCHIVE_NAME}.sha256"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARCHIVE_NAME }}
-          path: |
-            ${{ env.ARCHIVE_NAME }}
-            ${{ env.ARCHIVE_NAME }}.sha256
-          if-no-files-found: error
-
-  build-freebsd:
-    name: Build freebsd/amd64
-    needs: test
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: workbuddy/go.mod
-          cache-dependency-path: workbuddy/go.sum
-
-      - name: Resolve release metadata
-        id: meta
-        run: |
-          set -euo pipefail
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(tr -d ' \n\r' < workbuddy/VERSION)"
-          fi
-          CLEAN_VERSION="${VERSION%%+*}"
-          echo "VERSION=${CLEAN_VERSION}" >> "${GITHUB_ENV}"
-          echo "version=${CLEAN_VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "ARCHIVE_NAME=${PLUGIN_ID}_${CLEAN_VERSION}_freebsd_amd64.zip" >> "${GITHUB_ENV}"
-
-      - name: Build FreeBSD amd64 shared library
-        timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
-        env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: workbuddy
-          packages: .
-          targets: freebsd-amd64
-          out-dir: dist/freebsd-amd64
-          output: ${{ env.PLUGIN_ID }}.so
-          flags: -ldflags=-s -w
-          x-flags: main.version=${{ steps.meta.outputs.version }}
-
-      - name: Package plugin
-        run: |
-          set -euo pipefail
-          LIB=""
-          for p in \
-            "workbuddy/dist/freebsd-amd64/${PLUGIN_ID}.so" \
-            "dist/freebsd-amd64/${PLUGIN_ID}.so"; do
-            if [ -f "$p" ]; then LIB="$p"; break; fi
-          done
-          if [ -z "$LIB" ]; then
-            echo "library not found"; find . -name 'workbuddy.so' | head
+            echo "library not found"; find . -name '*.dll' -o -name '*.so' | head
             exit 1
           fi
           go run ./.github/scripts/package-release.go \
@@ -307,8 +286,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '')
     needs:
       - build
-      - build-windows-arm64
-      - build-freebsd
+      - build-cross
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -337,20 +315,21 @@ jobs:
         run: |
           set -euo pipefail
           ls -la dist/
-          # Prefer sorted combined checksums
           if ls dist/*.sha256 >/dev/null 2>&1; then
             sort dist/*.sha256 > dist/checksums.txt
           else
-            (cd dist && sha256sum workbuddy_*.zip > checksums.txt)
+            (cd dist && sha256sum *.zip > checksums.txt)
           fi
           cat dist/checksums.txt
-          # Required assets for issue #1
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_linux_amd64.zip"
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_linux_arm64.zip"
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_darwin_amd64.zip"
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_darwin_arm64.zip"
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_windows_amd64.zip"
-          test -f "dist/workbuddy_${{ steps.meta.outputs.version }}_windows_arm64.zip"
+          V="${{ steps.meta.outputs.version }}"
+          for id in workbuddy qoderwork; do
+            test -f "dist/${id}_${V}_linux_amd64.zip"
+            test -f "dist/${id}_${V}_linux_arm64.zip"
+            test -f "dist/${id}_${V}_darwin_amd64.zip"
+            test -f "dist/${id}_${V}_darwin_arm64.zip"
+            test -f "dist/${id}_${V}_windows_amd64.zip"
+            test -f "dist/${id}_${V}_windows_arm64.zip"
+          done
 
       - name: Sync registry.json version
         env:
@@ -362,8 +341,7 @@ jobs:
           p = pathlib.Path("registry.json")
           data = json.loads(p.read_text())
           for plug in data.get("plugins", []):
-              if plug.get("id") == "workbuddy":
-                  plug["version"] = v
+              plug["version"] = v
           p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
           print(p.read_text())
           PY
@@ -377,7 +355,6 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
-          # Ensure tag exists when dispatching with version
           if [[ "${GITHUB_REF_TYPE:-}" != "tag" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -387,29 +364,21 @@ jobs:
             fi
           fi
           NOTES=$(cat <<EOF
-          ## WorkBuddy CPA plugin v${VERSION}
+          ## CPA plugins v${VERSION} (workbuddy + qoderwork)
 
           Multi-arch builds for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin store (\`github-release\` install type).
 
           ### Assets (pluginstore \`ArchiveName(id, version, goos, goarch)\`)
-          | File | Contents |
-          |---|---|
-          | \`workbuddy_${VERSION}_linux_amd64.zip\` | \`workbuddy.so\` |
-          | \`workbuddy_${VERSION}_linux_arm64.zip\` | \`workbuddy.so\` |
-          | \`workbuddy_${VERSION}_darwin_amd64.zip\` | \`workbuddy.dylib\` |
-          | \`workbuddy_${VERSION}_darwin_arm64.zip\` | \`workbuddy.dylib\` |
-          | \`workbuddy_${VERSION}_windows_amd64.zip\` | \`workbuddy.dll\` |
-          | \`workbuddy_${VERSION}_windows_arm64.zip\` | \`workbuddy.dll\` |
-          | \`workbuddy_${VERSION}_freebsd_amd64.zip\` | \`workbuddy.so\` |
-          | \`checksums.txt\` | SHA256 of zips |
+          Each zip contains the bare library at its root:
+          \`<id>.so\` (linux/freebsd), \`<id>.dylib\` (darwin), \`<id>.dll\` (windows).
 
-          ### Manual install (linux/amd64 example)
+          Platforms per plugin: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
+          windows/amd64, windows/arm64, freebsd/amd64, plus \`checksums.txt\`.
+
+          ### Manual install (example: qoderwork linux/amd64)
           \`\`\`bash
-          unzip workbuddy_${VERSION}_linux_amd64.zip
-          # flat plugins dir:
-          cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
-          # or platform layout used by some deploys:
-          mkdir -p plugins/linux/amd64 && cp workbuddy.so plugins/linux/amd64/
+          unzip qoderwork_${VERSION}_linux_amd64.zip
+          cp qoderwork.so /path/to/cliproxyapi/plugins/qoderwork.so
           \`\`\`
 
           \`\`\`yaml
@@ -419,6 +388,8 @@ jobs:
             configs:
               workbuddy:
                 enabled: true
+              qoderwork:
+                enabled: true
           \`\`\`
 
           ### Remote update (custom plugin source)
@@ -426,14 +397,14 @@ jobs:
           \`\`\`
           https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
           \`\`\`
-          Then install / update **workbuddy** from the store UI.
+          Then install / update **workbuddy** and **qoderwork** from the store UI.
           EOF
           )
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" dist/workbuddy_*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${TAG}" dist/*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${TAG}" dist/workbuddy_*.zip dist/checksums.txt \
+            gh release create "${TAG}" dist/*.zip dist/checksums.txt \
               --repo "${GITHUB_REPOSITORY}" \
-              --title "WorkBuddy ${TAG}" \
+              --title "CPA plugins ${TAG}" \
               --notes "${NOTES}"
           fi
