@@ -68,7 +68,7 @@
 
 （每完成一项填一行）
 
-- [ ] **L1** OAuth 登录卡片 Vertex 化
+- [x] **L1** OAuth 登录卡片 Vertex 化 → v0.1.12 / commit fc63333（URL 指向面板 PAT 表单，PollLogin 检测新 auth 文件）
 - [ ] **L2** keepalive 自动刷新验证
 - [ ] **L3** 子 agent 全面死代码扫描
 - [ ] **L4** 测试文件清理

@@ -48,7 +48,6 @@ func keepaliveEnabled() bool {
 }
 
 // sessionDeadMarkers identify a server-side revoked / expired token.
-// QoderWork returns TOKEN_EXPIRE when jt- or jrt- is no longer valid;
 // QoderWork returns TOKEN_EXPIRE when jt- or jrt- is no longer valid.
 var sessionDeadMarkers = []string{
 	"TOKEN_EXPIRE",
@@ -119,19 +118,16 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 		return "failed", fmt.Errorf("refresh rejected (HTTP %d): %s", status, truncateRedacted(err.Error(), 120))
 	}
 
-	var tok tokenData
-	if err := json.Unmarshal(data, &tok); err != nil || tok.AccessToken == "" {
-		return "failed", fmt.Errorf("refresh_failed: no accessToken in response")
+	var tok jobTokenResponse
+	if err := json.Unmarshal(data, &tok); err != nil || tok.Token == "" {
+		return "failed", fmt.Errorf("refresh_failed: no token in response (raw=%s)", truncateRedacted(string(data), 200))
 	}
-	sa.Auth.AccessToken = tok.AccessToken
+	sa.Auth.AccessToken = tok.Token
 	if tok.RefreshToken != "" {
 		sa.Auth.RefreshToken = tok.RefreshToken
 	}
-	if tok.Domain != "" {
-		sa.Auth.Domain = tok.Domain
-	}
 	sa.Auth.ExpiresAt = preserveExpiry(
-		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Second).Unix(),
+		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Millisecond).Unix(),
 		sa.Auth.ExpiresAt,
 	)
 	if err := persistAuthTokens(authIndex, sa); err != nil {

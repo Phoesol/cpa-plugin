@@ -470,13 +470,9 @@ type apiEnvelope struct {
 	Data json.RawMessage `json:"data"`
 }
 
-type tokenData struct {
-	AccessToken      string `json:"accessToken"`
-	RefreshToken     string `json:"refreshToken"`
-	ExpiresIn        int64  `json:"expiresIn"`
-	RefreshExpiresIn int64  `json:"refreshExpiresIn"`
-	Domain           string `json:"domain"`
-}
+// jobTokenResponse is defined in oauth.go; keepalive and handleRefreshAuth
+// both use it. The old tokenData struct (camelCase tags) was wrong and has
+// been removed — QoderWork returns snake_case JSON.
 
 type accountData struct {
 	UID          string `json:"uid"`
