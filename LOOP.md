@@ -79,7 +79,7 @@
 - [x] **L8** stream/usage/cache 死代码扫描 → 删 extractAccessToken（17 行）；go vet clean
 - [x] **L9** panel.html 深度清理 → 无 workbuddy/codebuddy/Global 残留
 - [x] **L10** LICENSE 优化 → 已正确（Sliverkiss based on workbuddy by lovingfish）
-- [x] **L11** auth 分类修复（CPA 原生 type 契约对齐）→ v0.1.19 / commit 7b776a9（存量 29 个 workbuddy 文件补 type + ParseAuth type/路由防御；双 provider chat 实测通过）
+- [x] **L11** auth 分类修复（CPA 原生 type 契约对齐）→ qoderwork v0.1.19 / commit 7b776a9 + workbuddy v0.8.4 / commit 86ba51e（存量 29 文件补 type + 双插件 ParseAuth 对称防御；写入侧核查均合规；双 provider chat 实测通过）
 
 ---
 
