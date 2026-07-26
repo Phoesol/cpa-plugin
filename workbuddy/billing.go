@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -113,12 +112,13 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 		return nil, err
 	}
 	billingHeaders(req, sa)
-	resp, err := sharedHTTPClient().Do(req)
+	// Route via host.http.do so request-log captures the call (v0.8.1 compliance:
+	// was sharedHTTPClient().Do — bypassed host transport policy + logging).
+	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw := resp.Body
 	// Upstream 5xx is transient — classify it so billingCall can retry,
 	// and keep a redacted response body snippet for diagnosis (A-42).
 	if resp.StatusCode >= 500 {

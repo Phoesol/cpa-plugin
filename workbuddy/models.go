@@ -395,7 +395,12 @@ func filterExcludedModels(models []pluginapi.ModelInfo, host pluginapi.HostConfi
 	for _, m := range excluded {
 		excludeSet[strings.ToLower(strings.TrimSpace(m))] = struct{}{}
 	}
-	out := models[:0]
+	// Use a fresh slice — models[:0] would alias the input's backing array,
+	// which may be the dynamicModelsCache's own slice. Mutating it in place
+	// would corrupt the cache for subsequent callers (P0 bug: after one
+	// filterExcludedModels call, cache returns the filtered list as the
+	// "full" list on the next fetch).
+	out := make([]pluginapi.ModelInfo, 0, len(models))
 	for _, m := range models {
 		if _, skip := excludeSet[strings.ToLower(m.ID)]; skip {
 			continue
