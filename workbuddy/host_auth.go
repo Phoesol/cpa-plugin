@@ -38,7 +38,10 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	if err := json.Unmarshal(env.Result, &resp); err != nil {
 		return nil, err
 	}
-	out := resp.Files[:0]
+	// Fresh slice — resp.Files[:0] would alias the RPC response's backing
+	// array (P1-3: fragile pattern, safe today but could break if resp is
+	// ever cached/reused).
+	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
 	for _, f := range resp.Files {
 		if strings.EqualFold(f.Type, providerName) || strings.EqualFold(f.Provider, providerName) {
 			out = append(out, f)

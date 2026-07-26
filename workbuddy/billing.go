@@ -361,6 +361,10 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
+	// Explicitly set success as bool — upstream may return "true" (string)
+	// which would cause downstream `out["success"] == true` to fail silently
+	// (P1-2 logic bug: type mismatch on success field).
+	m["success"] = true
 	return m, nil
 }
 
