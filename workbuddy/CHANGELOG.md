@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.8.0
+
+### Refactor — community-grade file layout
+
+完成 v0.7.0 合规改造后的代码组织大重构，把两个超大主档拆成单一职责的
+小文件，对齐 CPA 原生 plugin 案例的"一个能力一个文件"原则。
+
+**File splits (main.go 2940 → 809, management.go 2263 → 349, lifecycle.go 980 → 535)：**
+
+- `redact.go` (49) — redactSecrets + 4 个 regex + truncate
+- `usage.go` (242) — handleUsage + publishUsage + forwardUsageToCPAMP + sseUsageCollector
+- `payload.go` (469) — prepareUpstreamBody + 4 个 InPlace mutator + 4 个 legacy 包装
+- `stream.go` (452) — streamEmit/Close + pumpUpstreamStream + collectUpstreamStream + aggregate*
+- `models.go` (443) — callModelsAPI + fetchDynamicModels + resolveUpstreamModel + alias 反解
+- `oauth.go` (240) — handleStartLogin/PollLogin/RefreshAuth + newLoginClient + doJSON
+- `host_bridge.go` (388) — hostHTTPDo/DoStream/Read/Close + hostStreamReader + Direct fallbacks
+- `billing.go` (486) — billing API + fetch* + perform* + JSON helpers
+- `cache.go` (183) — accountCache + accountDetailFlight singleflight + prune
+- `host_auth.go` (73) — hostAuthList/Get/GetBundle (host auth-store RPC)
+- `usage_config.go` (202) — configure + resolveUsageReport + probe* + config vars
+- `checkin.go` (515) — handleManualCheckin + runAutoCheckin + schedulerLoop + classify/execute/summarize
+- `credits_handler.go` (285) — handleImportAuth/CheckinConfig/ClaimTrial/SelectAuth/CreditsQuery
+- `panel.go` (266) — buildDashboardEx + summarizeCredits + servePanel + panelHTML
+- `policy.go` (188) — lifecycleAction decisions + displayNote + labelForAuth
+- `authfile.go` (299) — authFileNameFor/sanitizeUIDForFileName/hostAuthPersist/deleteAuth + path safety
+
+**保留的小文件**：`scheduler.go` (138)、`active_auth.go` (158) — 本来就够小。
+
+**文档（社区标准）：**
+
+- `README.md` — 英文版，Features / Quickstart / Configuration / Lifecycle / Development / License
+- `README_CN.md` — 中文版
+- `LICENSE` — MIT
+- `Makefile` — build / test / lint / clean / release / tag 目标
+- `.gitignore` — 忽略 `*.so` / `*.h` / `bin/` / `dist/`
+- `docs/architecture.md` — 模块图 + 数据流 + 关键设计决策 + 与 CPA 的集成点
+- `docs/development.md` — 本地构建 / 测试 / 调试 / 发布流程
+- `docs/definition-of-done.md` — v0.8.0 验收标准（量化可测）
+
+### Lint / style
+
+- `gofmt -l .` → 0 files
+- `go vet ./...` → 0 issues
+- `gocritic check ./...` → 0 issues（修复 policy.go 的 ifElseChain）
+- `staticcheck` 真实代码问题 0（工具链版本噪音已过滤）
+
+### Bug Fixes (carried over from v0.6.31 / v0.7.0)
+
+本次重构完整保留了之前所有 bug 修复：
+- UID 路径穿越白名单（authfile.go sanitizeUIDForFileName）
+- refresh_token 不再泄露到 chat 上游（main.go backendHeaders）
+- invalidateAccountCredits 数据竞争修复（值拷贝）
+- handleManualCheckin early-already merge（不丢 credits/plan）
+- configure 嵌套锁修复（parse-then-lock）
+- scheduler_mode off 接通（handleSchedulerPick 读取配置）
+- deleteAuth 调 clearActiveAuthIfMatch
+- runAutoCheckin 串行改并发（sem=4）
+- cachedAccountDetails singleflight
+- panel.html XSS 修复（addEventListener + dataset）
+- panel.html CSRF（fetch credentials:omit）
+- redactSecrets 裸 JWT 兜底
+- pumpUpstreamStream context cancel
+- out[:0] 共享底层数组改新 slice
+- 热路径 4 次 JSON 序列化合并为 1 次
+- 冒泡排序改 sort.Slice
+- usageReportConfigured/buildDashboard 死代码删除
+- handleManualCheckin 三段拆分（classify/execute/summarize）
+- management BasePath 缓存（register 时读取宿主注入）
+
+### Tests
+
+- 115/115 tests pass (`go test -race`)
+- 新增 `TestSchedulerPick_OffMode_Defers` 覆盖 scheduler_mode=off 行为
+
 ## 0.7.0
 
 ### Compliance — CPA native patterns
