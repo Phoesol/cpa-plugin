@@ -50,4 +50,3 @@ func qoderEncode(plain []byte) string {
 	}
 	return sb.String()
 }
-

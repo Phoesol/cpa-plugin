@@ -99,14 +99,18 @@ const (
 	endpointChat   = gatewayBaseCN + "/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1"
 	endpointModels = gatewayBaseCN + "/algo/api/v2/model/list?Encode=1"
 
-	loginTTL = 5 * time.Minute
+	// loginTTL bounds one device-authorization flow. Users may need to log in
+	// to qoder.com.cn first (Aliyun SSO) before authorizing — give them room.
+	loginTTL = 10 * time.Minute
 )
 
-// loginCtx holds the cookie-affined HTTP client for one in-flight login flow.
-// QoderWork associates the browser login with the state issued at auth/state,
-// so we must reuse the same cookie jar across the state request and the polls.
+// loginCtx holds one in-flight device-authorization login flow. QoderWork's
+// desktop clients use a PKCE device flow: the plugin generates
+// verifier/challenge + nonce/machine_id, the user authorizes in a browser,
+// and PollLogin exchanges the grant at /api/v1/deviceToken/poll.
 type loginCtx struct {
-	client    *http.Client
+	verifier  string // PKCE code_verifier — required by the poll endpoint
+	nonce     string // device-flow nonce — paired with the auth URL
 	expires   time.Time
 	startedAt int64 // unix nano, set when StartLogin creates the state
 }

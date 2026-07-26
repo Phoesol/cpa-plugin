@@ -170,4 +170,3 @@ func pruneAccountCacheSoftCap(capN int) {
 		accountCache.Delete(items[i].key)
 	}
 }
-

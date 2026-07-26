@@ -26,12 +26,12 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 type checkinStatusResponse struct {
 	Status             string `json:"status"` // CLAIMABLE | CLAIMED
 	RewardCredits      int64  `json:"rewardCredits"`
-	NextClaimAt        int64  `json:"nextClaimAt"`        // s epoch
+	NextClaimAt        int64  `json:"nextClaimAt"` // s epoch
 	CurrentStreakDays  int64  `json:"currentStreakDays"`
 	TotalClaimDays     int64  `json:"totalClaimDays"`
 	TotalRewardCredits int64  `json:"totalRewardCredits"`
-	LastClaimedAt      int64  `json:"lastClaimedAt"`      // s epoch
-	RewardExpiresAt    int64  `json:"rewardExpiresAt"`    // s epoch
+	LastClaimedAt      int64  `json:"lastClaimedAt"`   // s epoch
+	RewardExpiresAt    int64  `json:"rewardExpiresAt"` // s epoch
 }
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
@@ -78,13 +78,13 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 // no envelope). Both userQuota (base credits) and addOnQuota (one-time pro
 // upgrade + checkin packs) are summed for the panel.
 type quotaUsageResponse struct {
-	UserID               string `json:"userId"`
-	UserType             string `json:"userType"`
-	UsageType            string `json:"usageType"`
+	UserID               string  `json:"userId"`
+	UserType             string  `json:"userType"`
+	UsageType            string  `json:"usageType"`
 	TotalUsagePercentage float64 `json:"totalUsagePercentage"`
-	IsQuotaExceeded      bool   `json:"isQuotaExceeded"`
-	ExpiresAt            int64  `json:"expiresAt"` // ms epoch
-	UpgradeURL           string `json:"upgradeUrl"`
+	IsQuotaExceeded      bool    `json:"isQuotaExceeded"`
+	ExpiresAt            int64   `json:"expiresAt"` // ms epoch
+	UpgradeURL           string  `json:"upgradeUrl"`
 	UserQuota            struct {
 		Total     float64 `json:"total"`
 		Used      float64 `json:"used"`
@@ -132,14 +132,14 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 
 // planResponse mirrors GET /api/v2/user/plan (plain JSON, no envelope).
 type planResponse struct {
-	UserType        string `json:"user_type"`
-	PlanTierName    string `json:"plan_tier_name"`
-	IsPersonal      bool   `json:"is_personal_version"`
-	IsPaid          bool   `json:"is_paid_plan"`
-	IsHighestTier   bool   `json:"is_highest_tier"`
-	FeatureAllowed  map[string]bool `json:"feature_allowed"`
-	StartDate       int64  `json:"start_date"` // ms epoch
-	EndDate         int64  `json:"end_date"`   // ms epoch
+	UserType       string          `json:"user_type"`
+	PlanTierName   string          `json:"plan_tier_name"`
+	IsPersonal     bool            `json:"is_personal_version"`
+	IsPaid         bool            `json:"is_paid_plan"`
+	IsHighestTier  bool            `json:"is_highest_tier"`
+	FeatureAllowed map[string]bool `json:"feature_allowed"`
+	StartDate      int64           `json:"start_date"` // ms epoch
+	EndDate        int64           `json:"end_date"`   // ms epoch
 }
 
 func fetchPaymentType(sa *storedAuth) string {

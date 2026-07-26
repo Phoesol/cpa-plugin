@@ -161,11 +161,11 @@ func callModelsAPI(sa *storedAuth) ([]pluginapi.ModelInfo, error) {
 			ctx2 = m.MaxInputTokens
 		}
 		out = append(out, pluginapi.ModelInfo{
-			ID:        m.Key,
-			Name:      m.DisplayName,
-			ContextLength: ctx2,
-			MaxCompletionTokens: 8192,
-			OwnedBy:   providerName,
+			ID:                         m.Key,
+			Name:                       m.DisplayName,
+			ContextLength:              ctx2,
+			MaxCompletionTokens:        8192,
+			OwnedBy:                    providerName,
 			SupportedGenerationMethods: []string{"chat"},
 		})
 	}

@@ -13,21 +13,21 @@ import (
 
 // wbAccount is one row of the dashboard.
 type wbAccount struct {
-	AuthIndex    string          `json:"auth_index"`
-	AuthID       string          `json:"auth_id,omitempty"`
-	Name         string          `json:"name"`
-	Label        string          `json:"label"`
-	Nickname     string          `json:"nickname"`
-	UID          string          `json:"uid"`
-	Region       string          `json:"region"` // "cn" or "global"
-	Plan         string          `json:"plan"`
-	Status       string          `json:"status"`
-	Disabled     bool            `json:"disabled"`
-	Exhausted    bool            `json:"exhausted"`
-	Selected     bool            `json:"selected"` // panel active routing card
-	Credits      *creditsSummary `json:"credits,omitempty"`
-	Checkin      *checkinSummary `json:"checkin,omitempty"`
-	Error        string          `json:"error,omitempty"`
+	AuthIndex string          `json:"auth_index"`
+	AuthID    string          `json:"auth_id,omitempty"`
+	Name      string          `json:"name"`
+	Label     string          `json:"label"`
+	Nickname  string          `json:"nickname"`
+	UID       string          `json:"uid"`
+	Region    string          `json:"region"` // "cn" or "global"
+	Plan      string          `json:"plan"`
+	Status    string          `json:"status"`
+	Disabled  bool            `json:"disabled"`
+	Exhausted bool            `json:"exhausted"`
+	Selected  bool            `json:"selected"` // panel active routing card
+	Credits   *creditsSummary `json:"credits,omitempty"`
+	Checkin   *checkinSummary `json:"checkin,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
 // credits/checkin/plan fields are left empty — the panel renders skeletons
@@ -112,7 +112,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
-						}
+					}
 				}
 			}
 			out[i] = acct

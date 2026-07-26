@@ -55,9 +55,9 @@ type cosySession struct {
 	MachineID    string `json:"machine_id"`
 	MachineToken string `json:"machine_token"`
 	MachineType  string `json:"machine_type"`
-	TempKey      string `json:"temp_key"`  // 16 ASCII chars, AES-128 key
-	CosyKey      string `json:"cosy_key"`  // base64(RSA(tempKey))
-	Info         string `json:"info"`      // base64(AES-CBC(identityJSON, tempKey))
+	TempKey      string `json:"temp_key"` // 16 ASCII chars, AES-128 key
+	CosyKey      string `json:"cosy_key"` // base64(RSA(tempKey))
+	Info         string `json:"info"`     // base64(AES-CBC(identityJSON, tempKey))
 }
 
 // cosyIdentity is the plaintext inside `info`. All fields required by server.
@@ -195,22 +195,22 @@ func (s *cosySession) headers(uid, body, rawURL, accept string, sse bool) (map[s
 		return nil, err
 	}
 	h := map[string]string{
-		"cosy-data-policy": "AGREE",
-		"content-type":     "application/json",
-		"cosy-machinetype": s.MachineType,
-		"cosy-clienttype":  "5",
-		"cosy-date":        date,
-		"cosy-user":        uid,
-		"cosy-key":         s.CosyKey,
-		"accept":           accept,
-		"cosy-clientip":    "169.254.198.161",
-		"authorization":    bearer,
-		"accept-encoding":  "identity",
-		"cosy-version":     "0.1.43",
-		"cosy-machineid":   s.MachineID,
+		"cosy-data-policy":  "AGREE",
+		"content-type":      "application/json",
+		"cosy-machinetype":  s.MachineType,
+		"cosy-clienttype":   "5",
+		"cosy-date":         date,
+		"cosy-user":         uid,
+		"cosy-key":          s.CosyKey,
+		"accept":            accept,
+		"cosy-clientip":     "169.254.198.161",
+		"authorization":     bearer,
+		"accept-encoding":   "identity",
+		"cosy-version":      "0.1.43",
+		"cosy-machineid":    s.MachineID,
 		"cosy-machinetoken": s.MachineToken,
-		"login-version":    "v2",
-		"user-agent":       "Go-http-client/2.0",
+		"login-version":     "v2",
+		"user-agent":        "Go-http-client/2.0",
 	}
 	if sse {
 		h["cache-control"] = "no-cache"

@@ -494,7 +494,6 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-
 // isEmptyValue reports whether v is a "zero" SSE field that should be
 // stripped from outgoing chunks. Used by cleanChunkJSON to drop the legacy
 // function_call shell ({"name":"","arguments":""}) some upstreams emit on

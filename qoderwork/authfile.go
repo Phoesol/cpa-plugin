@@ -279,4 +279,3 @@ func deleteAuthFileInDir(path, dir string) error {
 	}
 	return err
 }
-

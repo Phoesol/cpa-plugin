@@ -236,10 +236,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{
 		"results": results,
 		"summary": map[string]any{
-			"total":     len(targets),
-			"success":   successN,
-			"already":   alreadyN,
-			"fail":      failN,
+			"total":      len(targets),
+			"success":    successN,
+			"already":    alreadyN,
+			"fail":       failN,
 			"elapsed_ms": time.Since(t0).Milliseconds(),
 		},
 	}
