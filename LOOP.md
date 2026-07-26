@@ -51,7 +51,7 @@
 | **L8** | stream/usage/usage_config/cache/redact 死代码扫描 | 🟡 中 | ⏸ 待做 |
 | **L9** | panel.html 剩余 workbuddy 字符串/逻辑清理 | 🟢 低 | ⏸ 待做 |
 | **L10** | LICENSE 归属声明优化（保留 lovingfish 归属，加 Sliverkiss 修改） | 🟢 低 | ✅ 完成 |
-| **L11** | **auth 分类修复（CPA 原生 type 契约对齐）**：给存量 29 个 workbuddy 文件补 `"type"` 字段 + 两插件写入侧统一带 type + ParseAuth 加 type 防御 | 🔥 高 | ⏸ 进行中 |
+| **L11** | **auth 分类修复（CPA 原生 type 契约对齐）**：给存量 29 个 workbuddy 文件补 `"type"` 字段 + ParseAuth 加 type 防御 | 🔥 高 | ✅ v0.1.19 |
 
 ---
 
@@ -79,7 +79,7 @@
 - [x] **L8** stream/usage/cache 死代码扫描 → 删 extractAccessToken（17 行）；go vet clean
 - [x] **L9** panel.html 深度清理 → 无 workbuddy/codebuddy/Global 残留
 - [x] **L10** LICENSE 优化 → 已正确（Sliverkiss based on workbuddy by lovingfish）
-- [ ] **L11** auth 分类修复（CPA 原生 type 契约对齐）→ 进行中
+- [x] **L11** auth 分类修复（CPA 原生 type 契约对齐）→ v0.1.19 / commit 7b776a9（存量 29 个 workbuddy 文件补 type + ParseAuth type/路由防御；双 provider chat 实测通过）
 
 ---
 
