@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -89,6 +90,15 @@ var (
 	usageReportURL = defaultUsageReportURL
 	usageReportKey = ""
 	usageReportMu  sync.RWMutex
+
+	// managementAPIKey: plugin-layer auth for /v0/management/plugins/workbuddy/*
+	// write endpoints. When empty, plugin relies on host-side auth (CPA's
+	// management middleware) — that's the historical default and stays
+	// backward-compatible. When set via config_yaml management_key: or env
+	// WB_MANAGEMENT_KEY, handleManagement enforces constant-time Bearer match
+	// plus per-IP token-bucket rate limiting on mutating endpoints.
+	managementAPIKey   = ""
+	managementAPIKeyMu sync.RWMutex
 )
 
 // Default URL tries localhost first (works for both bare-metal and Docker
@@ -102,15 +112,11 @@ const fallbackUsageReportURL = "http://cpa-manager-plus:18317/v0/management/usag
 
 // configure decodes plugin config from the lifecycle request.
 func configure(raw []byte) {
-	checkinAutoMu.Lock()
-	defer checkinAutoMu.Unlock()
-	checkinAuto = true
-	lifecycleAutoMu.Lock()
-	lifecycleAuto = true
-	lifecycleAutoMu.Unlock()
-	schedulerModeMu.Lock()
-	defer schedulerModeMu.Unlock()
-	schedulerMode = schedulerModeOff // reset to default on reconfigure
+	// Parse config without holding any lock (fixes nested-lock hazard).
+	nextCheckinAuto := true
+	nextLifecycleAuto := true
+	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
+	nextMgmtKey := ""
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
@@ -122,23 +128,18 @@ func configure(raw []byte) {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "checkin_auto:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
-					checkinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+					nextCheckinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
 				if strings.HasPrefix(line, "lifecycle_auto:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
 					v = strings.Trim(v, "\"'")
-					lifecycleAutoMu.Lock()
-					lifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-					lifecycleAutoMu.Unlock()
+					nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
 				}
 				if strings.HasPrefix(line, "scheduler_mode:") {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
-					// Strip surrounding quotes if present.
 					v = strings.Trim(v, "\"'")
 					if v == schedulerModeCredits {
-						schedulerMode = schedulerModeCredits
-					} else {
-						schedulerMode = schedulerModeOff
+						nextSchedulerMode = schedulerModeCredits
 					}
 				}
 				if strings.HasPrefix(line, "usage_report_url:") {
@@ -149,9 +150,36 @@ func configure(raw []byte) {
 					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
 					cfgKey = strings.Trim(v, "\"'")
 				}
+				if strings.HasPrefix(line, "management_key:") {
+					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
+					nextMgmtKey = strings.Trim(v, "\"'")
+				}
 			}
 		}
 	}
+
+	// Apply each setting under its own lock — no nesting.
+	checkinAutoMu.Lock()
+	checkinAuto = nextCheckinAuto
+	checkinAutoMu.Unlock()
+
+	lifecycleAutoMu.Lock()
+	lifecycleAuto = nextLifecycleAuto
+	lifecycleAutoMu.Unlock()
+
+	schedulerModeMu.Lock()
+	schedulerMode = nextSchedulerMode
+	schedulerModeMu.Unlock()
+
+	// management key: config_yaml > env > keep existing. Empty stays empty
+	// (plugin-layer auth disabled, host middleware still guards).
+	if nextMgmtKey == "" {
+		nextMgmtKey = strings.TrimSpace(os.Getenv("WB_MANAGEMENT_KEY"))
+	}
+	managementAPIKeyMu.Lock()
+	managementAPIKey = nextMgmtKey
+	managementAPIKeyMu.Unlock()
+
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
 }
@@ -1292,6 +1320,30 @@ type managementRegistrationResponse struct {
 	Resources []resourceRoute   `json:"resources,omitempty"`
 }
 
+// managementBasePathCache holds the host-injected BasePath so handleManagement
+// doesn't hardcode /v0/management. Falls back to the historical default if the
+// host doesn't provide one (older CPA builds).
+var (
+	managementBasePathCache   = "/v0/management"
+	managementBasePathCacheMu sync.RWMutex
+)
+
+func loadedManagementBasePath() string {
+	managementBasePathCacheMu.RLock()
+	defer managementBasePathCacheMu.RUnlock()
+	return managementBasePathCache
+}
+
+func setManagementBasePath(p string) {
+	p = strings.TrimRight(strings.TrimSpace(p), "/")
+	if p == "" {
+		return
+	}
+	managementBasePathCacheMu.Lock()
+	managementBasePathCache = p
+	managementBasePathCacheMu.Unlock()
+}
+
 func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
@@ -1325,7 +1377,22 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
 
-	base := "/v0/management/plugins/" + providerName
+	// Plugin-layer auth + rate limit for mutating endpoints (v0.6.31).
+	// Only enforced when management_key is configured; otherwise host middleware
+	// is the sole guard (historical default).
+	if req.Method == http.MethodPost || mutatingManagementPath(path) {
+		ip := managementClientIP(req)
+		if !allowManagementRequest(ip) {
+			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
+				"error": "rate limit exceeded, try again later",
+			}))
+		}
+		if status, msg := checkManagementAuth(req); status != 0 {
+			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
+		}
+	}
+
+	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
@@ -1345,6 +1412,128 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
 	}
 	return okEnvelope(mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "not found: " + path}))
+}
+
+// -----------------------------------------------------------------------------
+// Plugin-layer management auth + rate limit (v0.6.31)
+// -----------------------------------------------------------------------------
+//
+// When management_key is configured (config_yaml or WB_MANAGEMENT_KEY env), all
+// mutating endpoints under /v0/management/plugins/workbuddy/* require a matching
+// Bearer token. Read-only GET endpoints (accounts/credits/panel) pass through so
+// the panel can render before the user has pasted a key — the panel itself
+// supplies the key on every call via Authorization header.
+//
+// A per-IP token-bucket rate limiter guards against brute-force when the key
+// check fails repeatedly.
+
+const (
+	mgmtRateLimitCapacity = 5                // burst
+	mgmtRateLimitRefill   = time.Minute / 10 // 1 token per 6s
+	mgmtRateLimitTTL      = 10 * time.Minute // idle entry eviction
+)
+
+type mgmtRateEntry struct {
+	tokens   float64
+	lastSeen time.Time
+}
+
+var (
+	mgmtRateLimit   = map[string]*mgmtRateEntry{}
+	mgmtRateLimitMu sync.Mutex
+)
+
+func loadedManagementKey() string {
+	managementAPIKeyMu.RLock()
+	defer managementAPIKeyMu.RUnlock()
+	return managementAPIKey
+}
+
+// checkManagementAuth returns an HTTP status + error message when the request
+// should be rejected. status=0 means allow.
+func checkManagementAuth(req pluginapi.ManagementRequest) (int, string) {
+	want := loadedManagementKey()
+	if want == "" {
+		return 0, "" // plugin-layer auth disabled; rely on host middleware
+	}
+	got := strings.TrimSpace(req.Headers.Get("Authorization"))
+	if !strings.HasPrefix(got, "Bearer ") {
+		return http.StatusUnauthorized, "missing Bearer token"
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(got, "Bearer "))
+	if subtle.ConstantTimeCompare([]byte(token), []byte(want)) != 1 {
+		return http.StatusForbidden, "invalid management key"
+	}
+	return 0, ""
+}
+
+// allowManagementRequest applies a per-IP token bucket. ip may be empty when the
+// host doesn't forward X-Forwarded-For / RemoteAddr — in that case use a single
+// global bucket.
+func allowManagementRequest(ip string) bool {
+	if ip == "" {
+		ip = "_global"
+	}
+	mgmtRateLimitMu.Lock()
+	defer mgmtRateLimitMu.Unlock()
+	now := time.Now()
+	e, ok := mgmtRateLimit[ip]
+	if !ok {
+		e = &mgmtRateEntry{tokens: mgmtRateLimitCapacity, lastSeen: now}
+		mgmtRateLimit[ip] = e
+	}
+	// Refill.
+	elapsed := now.Sub(e.lastSeen)
+	e.tokens += float64(elapsed) / float64(mgmtRateLimitRefill)
+	if e.tokens > mgmtRateLimitCapacity {
+		e.tokens = mgmtRateLimitCapacity
+	}
+	e.lastSeen = now
+	if e.tokens < 1 {
+		return false
+	}
+	e.tokens--
+	// Lazy eviction of idle entries (don't grow the map forever).
+	if len(mgmtRateLimit) > 1024 {
+		for k, v := range mgmtRateLimit {
+			if now.Sub(v.lastSeen) > mgmtRateLimitTTL {
+				delete(mgmtRateLimit, k)
+			}
+		}
+	}
+	return true
+}
+
+// managementClientIP extracts a best-effort client identifier for rate limiting.
+// CPA host doesn't currently forward RemoteAddr, so fall back to X-Forwarded-For
+// / X-Real-IP headers if the deployment adds them via a reverse proxy.
+func managementClientIP(req pluginapi.ManagementRequest) string {
+	if xff := strings.TrimSpace(req.Headers.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.Index(xff, ","); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	if xr := strings.TrimSpace(req.Headers.Get("X-Real-Ip")); xr != "" {
+		return xr
+	}
+	return ""
+}
+
+// mutatingManagementPath reports whether the path performs a write (checkin,
+// import, trial claim, select, refresh, config toggle). Read endpoints pass.
+func mutatingManagementPath(path string) bool {
+	base := loadedManagementBasePath() + "/plugins/" + providerName
+	switch path {
+	case base + "/refresh",
+		base + "/checkin",
+		base + "/checkin/config",
+		base + "/import",
+		base + "/trial",
+		base + "/select":
+		return true
+	}
+	return false
 }
 
 func mgmtJSONResponse(status int, v any) pluginapi.ManagementResponse {
