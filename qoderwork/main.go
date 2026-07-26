@@ -453,11 +453,19 @@ type storedAuth struct {
 	Account storedAccount `json:"account"`
 }
 
+// storedTokens holds one credential family at a time in Access/RefreshToken,
+// plus the long-lived PAT fallback. Two families coexist in one file:
+//
+//	PAT family:   accessToken=jt- (24h),  refreshToken=jrt- (48h)
+//	OAuth family: accessToken=dt- (~30d), refreshToken=drt- (~1y, rotating)
+//
+// personalToken (pt-) is family-independent and never overwritten by refreshes
+// — it re-exchanges a fresh jobToken pair when both live tokens die.
 type storedTokens struct {
-	AccessToken   string `json:"accessToken"`   // jt-..., 24h
-	RefreshToken  string `json:"refreshToken"`  // jrt-..., 48h
-	PersonalToken string `json:"personalToken"` // pt-..., long-lived — re-exchanges when jrt- expires
-	ExpiresAt     int64  `json:"expiresAt"`     // jt- expiry (unix seconds)
+	AccessToken   string `json:"accessToken"`   // jt- (24h) or dt- (~30d)
+	RefreshToken  string `json:"refreshToken"`  // jrt- (48h) or drt- (~1y)
+	PersonalToken string `json:"personalToken"` // pt-..., long-lived fallback
+	ExpiresAt     int64  `json:"expiresAt"`     // active-token expiry (unix seconds)
 	Domain        string `json:"domain"`        // realm: qoder.com.cn
 }
 
@@ -496,18 +504,19 @@ func parseStored(raw []byte) (*storedAuth, error) {
 		}
 	} else {
 		var flat struct {
-			AccessToken  string `json:"accessToken"`
-			RefreshToken string `json:"refreshToken"`
-			ExpiresAt    int64  `json:"expiresAt"`
-			Domain       string `json:"domain"`
-			UID          string `json:"uid"`
-			EnterpriseID string `json:"enterpriseId"`
-			Nickname     string `json:"nickname"`
+			AccessToken   string `json:"accessToken"`
+			RefreshToken  string `json:"refreshToken"`
+			PersonalToken string `json:"personalToken"` // PAT fallback — must survive the flat shape too
+			ExpiresAt     int64  `json:"expiresAt"`
+			Domain        string `json:"domain"`
+			UID           string `json:"uid"`
+			EnterpriseID  string `json:"enterpriseId"`
+			Nickname      string `json:"nickname"`
 		}
 		if err := json.Unmarshal(raw, &flat); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
 		}
-		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain}
+		sa.Auth = storedTokens{AccessToken: flat.AccessToken, RefreshToken: flat.RefreshToken, PersonalToken: flat.PersonalToken, ExpiresAt: flat.ExpiresAt, Domain: flat.Domain}
 		sa.Account = storedAccount{UID: flat.UID, EnterpriseID: flat.EnterpriseID, Nickname: flat.Nickname}
 	}
 	if sa.Auth.AccessToken == "" {
