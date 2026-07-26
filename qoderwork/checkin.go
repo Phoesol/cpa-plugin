@@ -6,6 +6,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -303,6 +305,12 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 			out["reward_credits"] = int64(rc)
 		}
 		out["message"] = "签到成功"
+		// Refresh the credits snapshot so the panel shows the post-checkin
+		// balance immediately (check-in grants new credits). Best-effort:
+		// a failure here must not flip the check-in result to error.
+		if cr, crErr := fetchUserResource(sa); crErr == nil && cr != nil {
+			out["credits"] = cr
+		}
 		return out
 	}
 	out["success"] = false
@@ -313,6 +321,66 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 func checkinLockFor(authIndex string) *sync.Mutex {
 	v, _ := checkinLocks.LoadOrStore(authIndex, &sync.Mutex{})
 	return v.(*sync.Mutex)
+}
+
+// claimActivityPacks claims one-time activity packs for a freshly logged-in
+// account (pro-upgrade +1800). Best-effort: checks eligibility first, claims
+// only when eligible, and never fails the caller — login succeeds regardless
+// of the outcome here.
+func claimActivityPacks(sa *storedAuth) {
+	eligible, err := checkProUpgradeEligibility(sa)
+	if err != nil || !eligible {
+		return
+	}
+	_, _ = claimProUpgrade(sa) // ignore result — ALREADY_CLAIMED is fine
+}
+
+// checkProUpgradeEligibility returns whether the account can still claim the
+// one-time Pro Upgrade pack (+1800).
+func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, upstreamBaseCN+"/sash/api/v1/me/pro-upgrade/eligibility", nil)
+	if err != nil {
+		return false, err
+	}
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil {
+		return false, err
+	}
+	if resp.StatusCode >= 400 {
+		return false, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	var m struct {
+		Eligible bool `json:"eligible"`
+	}
+	if err := json.Unmarshal(resp.Body, &m); err != nil {
+		return false, err
+	}
+	return m.Eligible, nil
+}
+
+// claimProUpgrade claims the one-time Pro Upgrade pack (+1800 credits).
+func claimProUpgrade(sa *storedAuth) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodPost, endpointProUpgrade, strings.NewReader("{}"))
+	if err != nil {
+		return nil, err
+	}
+	billingHeaders(req, sa)
+	resp, err := hostHTTPDo(req)
+	if err != nil {
+		return map[string]any{"success": false, "message": err.Error()}, nil
+	}
+	if resp.StatusCode >= 400 {
+		return map[string]any{"success": false, "message": fmt.Sprintf("http %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(resp.Body, &m); err != nil {
+		return nil, err
+	}
+	if _, ok := m["success"]; !ok {
+		m["success"] = true
+	}
+	return m, nil
 }
 
 // pruneCheckinLocks removes lock entries for auth indices that no longer
