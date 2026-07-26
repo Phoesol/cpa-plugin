@@ -130,7 +130,16 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("parse failed: %w", err)
+		// parse failed usually means upstream returned a non-JSON error page
+		// (e.g. APISIX 401 HTML for session-dead). Include a redacted snippet
+		// so the panel / logs can surface the real cause instead of a bare
+		// "parse failed" (P0-2 UX: was impossible to distinguish session dead
+		// from a malformed response).
+		snippet := strings.TrimSpace(redactSecrets(string(raw)))
+		if len(snippet) > 120 {
+			snippet = snippet[:120]
+		}
+		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, snippet)
 	}
 	if env.Code != 0 {
 		return nil, fmt.Errorf("code=%d msg=%s", env.Code, truncateRedacted(env.Msg, 120))

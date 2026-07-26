@@ -74,7 +74,7 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	var st authStateData
 	_ = json.Unmarshal(data, &st)
 	if st.State == "" || st.AuthURL == "" {
-		return nil, fmt.Errorf("auth state: missing state or authUrl")
+		return nil, fmt.Errorf("auth state: missing state or authUrl — please restart the login flow")
 	}
 	loginStates.Store(st.State, &loginCtx{client: client, expires: time.Now().Add(loginTTL)})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
@@ -97,12 +97,12 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	}
 	v, ok := loginStates.Load(state)
 	if !ok {
-		return nil, fmt.Errorf("poll: unknown state (restart login)")
+		return nil, fmt.Errorf("poll: unknown state (restart login) — the login session was lost; please re-initiate login")
 	}
 	lc := v.(*loginCtx)
 	if time.Now().After(lc.expires) {
 		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: login expired")
+		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
 	}
 
 	// Single-shot poll per RPC: the host drives the polling cadence.
@@ -117,7 +117,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		// surface them so the user sees a failure instead of polling until TTL.
 		if status == 0 || status >= 500 {
 			loginStates.Delete(state)
-			return nil, fmt.Errorf("poll: token endpoint error: %w", errTok)
+			return nil, fmt.Errorf("poll: token endpoint error: %w — upstream may be temporarily unavailable; retry in a few minutes", errTok)
 		}
 		// 4xx / business-code responses mean the login is still pending.
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
@@ -188,7 +188,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	}
 	var tok tokenData
 	if err := json.Unmarshal(data, &tok); err != nil || tok.AccessToken == "" {
-		return nil, fmt.Errorf("refresh_failed: no accessToken")
+		return nil, fmt.Errorf("refresh_failed: no accessToken in response — the refresh token may be expired; re-login required")
 	}
 	sa.Auth.AccessToken = tok.AccessToken
 	if tok.RefreshToken != "" {
