@@ -153,11 +153,12 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	if disabled {
 		parts = append(parts, "已禁用")
 	}
-	if cr == nil {
+	switch {
+	case cr == nil:
 		parts = append(parts, "积分未知")
-	} else if isCreditsExhausted(cr) {
+	case isCreditsExhausted(cr):
 		parts = append(parts, fmt.Sprintf("耗尽 · 余%d 已用%d", cr.TotalRemain, cr.TotalUsed))
-	} else {
+	default:
 		// Show remain as primary (what you can still spend). Used is real cycle spend.
 		// Size (capacity) grows with check-in packs — do not treat size↑ as usage↓.
 		if cr.TotalSize > 0 {

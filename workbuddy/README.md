@@ -1,186 +1,174 @@
-# WorkBuddy Plugin / WorkBuddy 插件
+# WorkBuddy Plugin for CLIProxyAPI
 
-[English](#english) | [中文](#中文)
+A [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) plugin that
+provides **Tencent CodeBuddy** (`copilot.tencent.com` CN and `workbuddy.ai`
+Global) as a native OAuth provider: dynamic model discovery, streaming executor,
+credit-aware scheduling, daily check-in automation, and a built-in management
+dashboard.
 
-Tencent **CodeBuddy** (`copilot.tencent.com`) provider plugin for [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI).
+[中文文档 → README_CN.md](README_CN.md)
 
----
+## Features
 
-## 中文
+- **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
+  host's auth store. CN and Global realms share one plugin, one config block.
+- **Dynamic models** — live model list from the upstream models API with a
+  5-minute cache and a static fallback. Host-side `oauth-model-alias` /
+  `oauth-excluded-models` config applies unchanged.
+- **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
+  via `host.stream.emit`) and non-streaming (SSE folded into a single
+  completion). `tool_choice` normalization, Claude Code template sanitization,
+  and per-realm system-message injection are built in.
+- **Credit lifecycle** — CN accounts auto-`disabled` when credits run out and
+  re-enabled when a check-in restores them. Global accounts are deleted on
+  exhaustion (one-shot trial quota). Hard credit errors from the executor
+  trigger an immediate reconcile.
+- **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
+  time (configurable). Manual "check in all" from the panel. Per-account
+  mutex prevents duplicate claims from racing browser tabs.
+- **Trial claim** — Global accounts can claim the one-time 250-credit expert
+  trial pack from the panel.
+- **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
+  with credits progress bars, plan badges, exhausted/disabled flags, region
+  filter, and credential import.
+- **Scheduler** (optional) — `scheduler_mode: credits` makes the plugin pick
+  the panel-selected account; `off` (default) defers to CPA's built-in
+  scheduler entirely.
+- **Usage forwarding** — implements `UsagePlugin`; every request's usage
+  record is forwarded to a configurable CPAMP endpoint. No record is sent
+  unless a URL+key are configured.
 
-### 功能
+## Quickstart
 
-- **OAuth 登录**：多账号 `workbuddy-<uid>.json`
-- **动态模型**：上游 models API + 5min 缓存 + 硬编码 fallback
-- **Executor**：流/非流 SSE 聚合、cleanChunk、跨协议 framing、alias 反解、tool_choice 归一
-- **Usage 上报**：`usage.PublishRecord` 三出口
-- **签到**：CN 09:00 / 21:00 + 面板手动；多标签 per-account 锁；**Global 不定时领 trial**
-- **积分生命周期**：CN 耗尽自动 `disabled`；有积分/签到后再开；Global 耗尽**删除** auth 文件
-- **积分面板**：耗尽/禁用角标、进度条、CN/Global 筛选、导入凭证、防 management key IP 封禁
-- **Scheduler**（可选）：`scheduler_mode: off|credits`（**默认 off**）；credits 优先非耗尽账号
-- **OAuth 别名/排除**：由 CPA 宿主 `oauth-model-alias` / `oauth-excluded-models` 处理
+### 1. Install the plugin
 
-### 安装
-
-**推荐：从 GitHub Release 安装多架构包**（符合 CPA 插件商店 `ArchiveName`）：
+Drop the compiled `workbuddy.so` into CPA's plugin directory:
 
 ```bash
-# linux/amd64（x86_64 服务器）
-unzip workbuddy_0.6.0_linux_amd64.zip   # → workbuddy.so
-cp workbuddy.so /path/to/cliproxyapi/plugins/workbuddy.so
+cp workbuddy.so /path/to/cliproxyapi/plugins/
 ```
 
-也可放在平台子目录：`plugins/linux/amd64/`、`plugins/darwin/arm64/` 等。
+For multi-arch deployments use the platform subdirectory convention:
+
+```
+plugins/
+  linux/amd64/workbuddy.so
+  linux/arm64/workbuddy.so
+  darwin/arm64/workbuddy.so
+```
+
+### 2. Enable in `config.yaml`
 
 ```yaml
 plugins:
   enabled: true
-  dir: "plugins"
+  dir: plugins
   configs:
     workbuddy:
       enabled: true
-      # checkin_auto: true      # CN 定时签到
-      # lifecycle_auto: true    # 耗尽关/删、回血再开
-      # scheduler_mode: off     # or credits
 ```
 
-重启 CPA。
+### 3. Sign in
 
-### 登录 / 凭证
+Open the WorkBuddy panel from CPA's sidebar (or hit
+`/v0/resource/plugins/workbuddy/panel` directly) and click **登录** to start
+the OAuth flow. Repeat for each account you want to add — the plugin writes
+one `workbuddy-<uid>.json` per account to the auth store.
 
-1. CPA 管理端 OAuth 选择 WorkBuddy 完成授权；或  
-2. 面板「导入凭证」弹窗粘贴 JSON → `POST .../import`  
-3. 落盘：`auths/workbuddy-<uid>.json`（含 `type`/`note`/`disabled` + nested auth）
+### 4. Use it
 
-### 生命周期规则
-
-| 区域 | 积分耗尽 | 之后 |
-|------|----------|------|
-| CN | 写 `disabled:true` | 签到/刷新后有积分 → 再打开 |
-| Global | **删除文件** | 需重新登录/导入 |
-
-Auth 页 CPAMP 备注行显示 `note`（区域+积分摘要）。筛选图标「W」属 CPAMP 前端静态表，**插件无法改成 logo**；完整管理用侧栏 WorkBuddy 面板。
-
-### 预期模型
-
-`/v1/models` 中 `owned_by=workbuddy` 的动态列表（账号权限为准），常见：`deepseek-v4-flash` / `deepseek-v4-pro` / `glm-5.x` / `kimi-k2.7` / `hy3*` / `minimax-m3` 等；可用 `oauth-model-alias` / `oauth-excluded-models` 管理。
-
-### CPAMP / 远程更新
-
-- 源码仓：`https://github.com/Sliverkiss/cpa-plugin`
-- **商店源（registry）**：`https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json`
-- Release 资产：`workbuddy_<ver>_<goos>_<goarch>.zip` + `checksums.txt`
-- 侧栏：`/v0/resource/plugins/workbuddy/panel`
-
-### 构建与测试
+Call the OpenAI-compatible endpoint with any alias that maps to a workbuddy
+model:
 
 ```bash
-cd workbuddy
-make test && make vet && make build VERSION=$(cat VERSION)
-# dist/workbuddy.so
+curl http://localhost:8317/v1/chat/completions \
+  -H "Authorization: Bearer $CPA_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "point/deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "hi"}],
+    "stream": true
+  }'
 ```
 
-### 管理 API
+## Configuration
 
-| 路径 | 方法 | 说明 |
+All fields are optional and live under `plugins.configs.workbuddy`.
+
+```yaml
+plugins:
+  configs:
+    workbuddy:
+      enabled: true
+
+      # Daily check-in automation for CN accounts (default true).
+      # Runs at 09:00 and 21:00 local time.
+      checkin_auto: true
+
+      # Credit lifecycle: disable CN on exhaust, delete Global on exhaust,
+      # re-enable CN after check-in restores credits (default true).
+      lifecycle_auto: true
+
+      # Scheduler behavior (default "off"):
+      #   off     → defer to CPA's built-in scheduler entirely
+      #   credits → plugin picks the panel-selected account (with fallback
+      #             when that account is exhausted / disabled)
+      scheduler_mode: "off"
+
+      # CPAMP usage forwarding. Both must be set for any record to be sent.
+      # Falls back to USAGE_REPORT_URL / USAGE_REPORT_KEY /
+      # CPAMP_ADMIN_KEY env vars or docker secret files when unset here.
+      usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
+      usage_report_key: ""
+
+      # Plugin-layer management auth. When set, all mutating endpoints under
+      # /v0/management/plugins/workbuddy/* require this Bearer token.
+      # When empty (default) the host's management middleware is the only
+      # guard. Also readable from WB_MANAGEMENT_KEY env var.
+      management_key: ""
+```
+
+Model aliases and exclusions are handled natively by CPA's
+`oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
+duplication needed.
+
+## Lifecycle
+
+| State | CN account | Global account |
 |---|---|---|
-| `.../accounts` | GET | 账号 + credits + **exhausted** + **disabled** |
-| `.../refresh` | POST | 强制刷新缓存 + 生命周期 reconcile |
-| `.../checkin` | POST | 手动签到（CN）；签到后 reenable 检查 |
-| `.../checkin/config` | POST | 自动签到开关 |
-| `.../trial` | POST | Global 专家包一次性领取 |
-| `.../credits` | GET | 实时积分 |
-| `.../import` | POST | 导入凭证 `{"json":{...}}` 或 `{"raw":"..."}` |
+| Credits > 0 | active | active |
+| Credits = 0 | `disabled: true` (auth file kept) | auth file **deleted** |
+| Check-in restores credits | re-enabled | n/a (already deleted) |
+| Trial available | n/a | claimable once per account |
+| Unknown credits | untouched (never mis-kill) | untouched |
 
-面板：`/v0/resource/plugins/workbuddy/panel`
+Hard credit errors from the executor (status 402, "insufficient credits",
+"积分不足", etc.) trigger an immediate reconcile of the failing account.
 
-### 已知策略
+## Development
 
-- **hy3\*** 系列：executor 将 `reasoning_effort` 钉为 `high`（非 ThinkingApplier 能力；见源码 `forceMaxThinking`）
-- **count_tokens**：上游无 API，返回 `{"input_tokens":0}`
-- **checkin_auto / lifecycle_auto / scheduler_mode**：config_yaml 可配；面板 checkin 开关运行时不写回 yaml
-- **host.http.do**：评估结论见 `docs/host-http-evaluation.md`（暂不迁移）
-- **包结构**：同包多文件，不拆 internal（`docs/package-layout.md`）
-
-### 文件
-
-| 文件 | 说明 |
-|---|---|
-| `main.go` | ABI / OAuth / executor |
-| `management.go` | 面板 / 签到 / 导入 / tick |
-| `lifecycle.go` | 积分耗尽关/删/再开 |
-| `scheduler.go` | scheduler.pick |
-| `panel.html` | 前端 |
-| `LICENSE` / `VERSION` / `CHANGELOG.md` | 发布元数据 |
-| `.github/workflows/build.yml` | 多架构 Release |
-
----
-
-## English
-
-### Features
-
-OAuth multi-account provider, dynamic models, production executor (SSE, tools, aliases), usage reporting, **CN daily check-in**, **Global one-shot expert trial (manual only)**, **credit lifecycle** (disable CN / delete Global when exhausted; re-enable CN after credits return), credits dashboard with region filters, optional **credits scheduler** (`scheduler_mode`, default `off`), credential JSON import.
-
-### Install
-
-Download the matching zip from [Releases](https://github.com/Sliverkiss/cpa-plugin/releases):
-
-```text
-workbuddy_<version>_linux_amd64.zip   # workbuddy.so
-workbuddy_<version>_linux_arm64.zip
-workbuddy_<version>_darwin_arm64.zip  # workbuddy.dylib
-workbuddy_<version>_windows_amd64.zip # workbuddy.dll
-```
-
-Unzip and place the library in CPA `plugins/` (or `plugins/<goos>/<goarch>/`). Enable:
-
-```yaml
-plugins:
-  configs:
-    workbuddy:
-      enabled: true
-```
-
-### Remote update
-
-Add custom plugin source:
-
-```text
-https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
-```
-
-### Build
+Requires Go 1.26+ (matches CPA).
 
 ```bash
-make test && make vet && make build
-# VERSION is read from ./VERSION (override with VERSION=x.y.z)
+# Build the plugin
+go build -buildmode=c-shared -o workbuddy.so .
+
+# Run tests
+go test -race ./...
+
+# Lint
+gofmt -l .
+go vet ./...
 ```
 
-Release artifacts are produced by `.github/workflows/build.yml` for linux/darwin/windows/freebsd multi-arch.
+The plugin uses CPA's host HTTP bridge (`host.http.do` / `do_stream`) for
+all upstream calls so request-log captures outbound traffic and host
+transport policy applies. A fallback direct HTTP client is used only when
+the bridge is unavailable (unit tests, hosts older than v7.2.x).
 
-### Config
+See [docs/development.md](docs/development.md) for the full workflow and
+[docs/architecture.md](docs/architecture.md) for the module map.
 
-```yaml
-plugins:
-  configs:
-    workbuddy:
-      enabled: true
-      scheduler_mode: off   # or credits
-      checkin_auto: true    # CN only
-      lifecycle_auto: true  # disable/delete/reenable on credits
-```
+## License
 
-### Lifecycle
-
-| Region | Exhausted credits | Recovery |
-|--------|-------------------|----------|
-| CN | set `disabled:true` | re-enable after check-in/refresh when remain>0 |
-| Global | **delete auth file** | re-login / re-import |
-
-### Notes
-
-- hy3\* models force `reasoning_effort=high` in-plugin
-- `count_tokens` stub returns zero input tokens
-- CPAMP Auth page filter icon letter "W" cannot be changed from the plugin (static frontend table); use `note` + WorkBuddy panel
-- See `docs/host-http-evaluation.md` and `docs/package-layout.md`
+MIT — see [LICENSE](LICENSE).
