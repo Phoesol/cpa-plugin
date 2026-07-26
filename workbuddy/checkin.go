@@ -240,6 +240,7 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 		kind   string // "err" | "global" | "already" | "eligible"
 		nick   string
 		errMsg string
+		ci     *checkinSummary // populated when kind == "already" so we don't refetch
 	}
 	classCh := make(chan classResult, len(targets))
 	var wg sync.WaitGroup
@@ -264,7 +265,10 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 			ci, ciErr := fetchCheckinStatus(sa)
 			if ciErr != nil {
 				if cached := cachedCheckinToday(f.ID); cached != nil && *cached {
-					classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick}
+					// Cache hit but fresh status failed — ci is nil here, so the
+					// already-branch below will need to refetch to refresh cache.
+					// That's correct: the cache may be stale.
+					classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick, ci: nil}
 					return
 				}
 				// Status unknown → still try check-in (upstream is idempotent).
@@ -272,7 +276,7 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 				return
 			}
 			if ci != nil && ci.TodayCheckedIn {
-				classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick}
+				classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick, ci: ci}
 				return
 			}
 			classCh <- classResult{idx: i, f: f, sa: sa, kind: "eligible", nick: nick}
@@ -304,12 +308,18 @@ func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) 
 		case "already":
 			out.already++
 			// Keep checkin in cache so light-load dashboard shows 已签到.
-			if ci2, _ := fetchCheckinStatus(cr.sa); ci2 != nil {
+			// Two sub-cases:
+			//   - ci != nil: fresh fetch succeeded during classify → use it to
+			//     update cache (no second fetch needed).
+			//   - ci == nil: cache fallback hit during classify → cache is
+			//     already current, no update needed.
+			// (M2 perf: was 2x fetchCheckinStatus per already-checked-in account.)
+			if cr.ci != nil {
 				var prev *accountCacheEntry
 				if v, ok := accountCache.Load(cr.f.ID); ok {
 					prev, _ = v.(*accountCacheEntry)
 				}
-				entry := &accountCacheEntry{checkin: ci2, fetched: time.Now()}
+				entry := &accountCacheEntry{checkin: cr.ci, fetched: time.Now()}
 				if prev != nil {
 					entry.credits = prev.credits
 					entry.plan = prev.plan
