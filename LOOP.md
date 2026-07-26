@@ -69,7 +69,7 @@
 （每完成一项填一行）
 
 - [x] **L1** OAuth 登录卡片 Vertex 化 → v0.1.12 / commit fc63333（URL 指向面板 PAT 表单，PollLogin 检测新 auth 文件）
-- [ ] **L2** keepalive 自动刷新验证
+- [x] **L2** keepalive 自动刷新验证 → v0.1.13 / commit de8ee8b（tokenData JSON tag 错误 camelCase→snake_case，删 tokenData 统一用 jobTokenResponse）
 - [ ] **L3** 子 agent 全面死代码扫描
 - [ ] **L4** 测试文件清理
 - [ ] **L5** 动态模型清单

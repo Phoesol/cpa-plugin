@@ -64,7 +64,7 @@ type checkinSummary struct {
 	CheckinDates    []string `json:"checkin_dates,omitempty"`
 }
 
-// with a transient error (HTTP 5xx or transport error). codebuddy.cn
+// with a transient error (HTTP 5xx or transport error). openapi.qoder.com.cn
 // intermittently returns 500s; without a retry a single hiccup surfaces as a
 // panel error even though the very next request would succeed.
 var billingRetryDelays = []time.Duration{300 * time.Millisecond, 900 * time.Millisecond}
