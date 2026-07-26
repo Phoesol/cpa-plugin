@@ -27,7 +27,7 @@ checksums.txt
 命名规则与官方一致：`ArchiveName(id, version, goos, goarch) = {id}_{version}_{goos}_{goarch}.zip`
 （见 CLIProxyAPI `internal/pluginstore`）。
 
-CI：push / tag `v*` / PR 触发 `.github/workflows/build.yml`（双插件矩阵构建，tag 时双插件同版本发 Release）。
+CI：push / PR 全量构建（只出 artifacts）；tag `<id>-v*`（如 `qoderwork-v0.2.6`）或 dispatch 触发**该插件独立版本**的 Release。
 
 ## 安装（linux/amd64 示例）
 
