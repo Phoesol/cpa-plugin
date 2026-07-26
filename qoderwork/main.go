@@ -556,6 +556,31 @@ func handleParseAuth(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	// Ownership check (CPA native contract): the host routes by the file's
+	// top-level "type" field (synthesizer/file.go). Files without a type fall
+	// back to polling every plugin — first Handled=true wins. To prevent
+	// claiming foreign providers' legacy files (e.g. workbuddy's type-less
+	// auths, which parseStored would otherwise accept because the nested
+	// {auth,account} shape is identical), only claim files whose declared
+	// type matches us — or whose filename carries our prefix.
+	var probeType struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(req.RawJSON, &probeType)
+	declared := strings.ToLower(strings.TrimSpace(probeType.Type))
+	if declared != "" && declared != providerName {
+		// Explicitly another provider's file — never claim it.
+		return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
+	}
+	if declared == "" {
+		// No type declared: only claim when the host already routed this to us
+		// (req.Provider == qoderwork) or the filename carries our prefix.
+		routed := strings.EqualFold(strings.TrimSpace(req.Provider), providerName)
+		prefixed := strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.FileName)), providerName+"-")
+		if !routed && !prefixed {
+			return okEnvelope(pluginapi.AuthParseResponse{Handled: false})
+		}
+	}
 	sa, err := parseStored(req.RawJSON)
 	if err != nil {
 		// Not a qoderwork credential; let the host try other providers.

@@ -1,8 +1,8 @@
 # QoderWork 插件持续优化 LOOP
 
-> **版本：** v1.0
+> **版本：** v1.1
 > **创建：** 2026-07-27
-> **当前线上版本：** qoderwork v0.1.11（已签到修复）
+> **当前线上版本：** qoderwork v0.1.18
 > **仓库：** https://github.com/Sliverkiss/cpa-plugin （子目录 `qoderwork/`）
 > **部署：** `/root/cpa-manager-plus/cliproxyapi/plugins/qoderwork-v<VERSION>.so`
 
@@ -50,7 +50,8 @@
 | **L7** | lifecycle/scheduler/policy/active_auth 逻辑审计（是否还需要） | 🟡 中 | ⏸ 待做 |
 | **L8** | stream/usage/usage_config/cache/redact 死代码扫描 | 🟡 中 | ⏸ 待做 |
 | **L9** | panel.html 剩余 workbuddy 字符串/逻辑清理 | 🟢 低 | ⏸ 待做 |
-| **L10** | LICENSE 归属声明优化（保留 lovingfish 归属，加 Sliverkiss 修改） | 🟢 低 | ⏸ 待做 |
+| **L10** | LICENSE 归属声明优化（保留 lovingfish 归属，加 Sliverkiss 修改） | 🟢 低 | ✅ 完成 |
+| **L11** | **auth 分类修复（CPA 原生 type 契约对齐）**：给存量 29 个 workbuddy 文件补 `"type"` 字段 + 两插件写入侧统一带 type + ParseAuth 加 type 防御 | 🔥 高 | ⏸ 进行中 |
 
 ---
 
@@ -68,7 +69,7 @@
 
 （每完成一项填一行）
 
-- [x] **L1** OAuth 登录卡片 Vertex 化 → v0.1.12 / commit fc63333（URL 指向面板 PAT 表单，PollLogin 检测新 auth 文件）
+- [x] **L1** ~~OAuth 登录卡片 Vertex 化~~ → v0.1.12 已做但用户判定未达预期；**2026-07-27 用户指示：登录卡片问题跳过不管**
 - [x] **L2** keepalive 自动刷新验证 → v0.1.13 / commit de8ee8b（tokenData JSON tag 错误 camelCase→snake_case，删 tokenData 统一用 jobTokenResponse）
 - [x] **L3** 子 agent 全面死代码扫描 → 完成（DEAD_CODE_REPORT.md 生成，16 项死代码已派 Claudium 清理）
 - [x] **L4** 测试文件清理 → 无 _test.go 文件（已删）
@@ -78,6 +79,7 @@
 - [x] **L8** stream/usage/cache 死代码扫描 → 删 extractAccessToken（17 行）；go vet clean
 - [x] **L9** panel.html 深度清理 → 无 workbuddy/codebuddy/Global 残留
 - [x] **L10** LICENSE 优化 → 已正确（Sliverkiss based on workbuddy by lovingfish）
+- [ ] **L11** auth 分类修复（CPA 原生 type 契约对齐）→ 进行中
 
 ---
 
