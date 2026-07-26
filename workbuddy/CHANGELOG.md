@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.1
+
+### Bug fixes + compliance polish
+
+- `keepalive.go` (new) — daily 22:00 access-token refresh to prevent Keycloak
+  offline-session expiry; reuses `schedulerLoop`, routes via `host.http.do`,
+  uses CPA native `disabled` field for session-dead auths.
+- `models.go` — fix `filterExcludedModels` slice aliasing that corrupted
+  `dynamicModelsCache` (P0).
+- `billing.go` — route all billing API calls through `hostHTTPDo` (was missed
+  in v0.7.0); improve "parse failed" error to include a redacted body snippet.
+- `checkin.go` — avoid double `fetchCheckinStatus` in classify already-branch.
+- `billing.go` — `performCheckinCall` now sets `success=true` as bool to avoid
+  downstream type-mismatch when upstream returns a string.
+- `host_auth.go` — fresh slice in `hostAuthList` to avoid aliasing RPC response.
+- `oauth.go` — route `handleRefreshAuth` via `hostHTTPDo` (last path still on
+  `sharedHTTPClient()`); make OAuth error messages actionable.
+
 ## 0.8.0
 
 ### Refactor — community-grade file layout
