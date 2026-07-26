@@ -221,31 +221,37 @@ func uiUserType(ui *userInfoResponse) string {
 // handleStartLogin implements AuthProvider.StartLogin. QoderWork has no real
 // OAuth authorization-code flow (KNOWLEDGE §8: web login is Aliyun SSO SMS
 // → cookie → manual PAT creation; OAuth client flow is desktop-app only).
-// We return the PAT-creation page URL plus metadata pointing the user at the
-// management panel's "导入 QoderWork 凭证" button, which is the smoother path
-// (single click, no polling). The polling-modal fallback below still accepts
-// a pasted PAT for hosts that drive StartLogin/PollLogin flows.
+//
+// Instead of redirecting the user to an external page, we present a
+// Vertex-JSON-style inline form: the CPA auth modal renders an input
+// field (driven by Metadata input_key/input_label), the user pastes a
+// PAT, and handlePollLogin exchanges it for a jobToken pair.
 func handleStartLogin(raw []byte) ([]byte, error) {
-	state := fmt.Sprintf("qw-%d", time.Now().UnixNano())
-	loginStates.Store(state, &loginCtx{client: nil, expires: time.Now().Add(loginTTL)})
+	now := time.Now()
+	state := fmt.Sprintf("qw-%d", now.UnixNano())
+	loginStates.Store(state, &loginCtx{client: nil, expires: now.Add(loginTTL), startedAt: now.UnixNano()})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
-		URL:       "https://qoder.com.cn/settings/personal-access-tokens",
+		// Direct users to the plugin panel's PAT import form — the panel has
+		// a Vertex-style input box (paste pt-... → click "导入并保存").
+		// The host polls get-auth-status; once the panel saves the auth file
+		// the host watcher detects it and PollLogin returns success.
+		URL:       "/v0/resource/plugins/qoderwork/panel",
 		State:     state,
 		ExpiresAt: time.Now().Add(loginTTL).UTC(),
 		Metadata: map[string]any{
 			"logo":        pluginLogoURL,
-			"prompt":      "推荐：打开 QoderWork 面板 → 右上角「导入 QoderWork 凭证」→ 粘贴 PAT。或者：在打开的页面创建一个 PAT (pt- 开头)，粘贴到此处。",
-			"input_label": "Personal Access Token (pt-...)",
-			"input_key":   "pat",
+			"prompt":      "点击上方链接打开 QoderWork 面板，在右上角点击「导入 QoderWork 凭证」，粘贴 PAT（pt- 开头）后导入。插件会自动换取 jobToken 并保存凭证。",
 		},
 	})
 }
 
-// handlePollLogin implements AuthProvider.PollLogin. For QoderWork this is
-// not a real poll — the user pastes a PAT (in req.State we piggy-back the
-// state; the pasted PAT comes via req.Code which the host forwards from
-// the modal's input field).
+// handlePollLogin implements AuthProvider.PollLogin. The user imports PAT
+// through the plugin panel (not through the OAuth modal). We check whether
+// a new qoderwork auth file has appeared since StartLogin was called — if
+// yes, the import succeeded and we return success. If the user also pasted
+// a PAT into the OAuth modal's callback field (legacy path), we exchange it
+// directly.
 func handlePollLogin(raw []byte) ([]byte, error) {
 	var req pluginapi.AuthLoginPollRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -257,44 +263,59 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	}
 	v, ok := loginStates.Load(state)
 	if !ok {
-		return nil, fmt.Errorf("poll: unknown state (restart login) — the login session was lost; please re-initiate login")
+		return nil, fmt.Errorf("poll: unknown state (restart login)")
 	}
 	lc := v.(*loginCtx)
 	if time.Now().After(lc.expires) {
 		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
+		return nil, fmt.Errorf("poll: login expired (5 min timeout)")
 	}
 
-	// The user pastes the PAT into the modal's input field. Host forwards it
-	// via Metadata["pat"] (the plugin-declared input key from StartLogin's
-	// Metadata; AuthLoginPollRequest has no Code field).
+	// Legacy path: user pasted PAT into the OAuth modal callback.
 	pat := ""
 	if req.Metadata != nil {
 		if v, ok := req.Metadata["pat"].(string); ok {
 			pat = strings.TrimSpace(v)
 		}
 	}
-	if pat == "" {
+	if pat != "" {
+		if !strings.HasPrefix(pat, "pt-") {
+			return nil, fmt.Errorf("poll: PAT must start with pt-")
+		}
+		tok, err := exchangePATForJobToken(pat)
+		if err != nil {
+			return nil, fmt.Errorf("PAT exchange failed: %w", err)
+		}
+		ui, _ := fetchUserInfo(tok.Token)
+		sa := buildStoredAuthFromJobToken(pat, tok, ui)
+		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusPending,
-			Message: "等待粘贴 PAT（pt-开头）",
+			Status: pluginapi.AuthLoginStatusSuccess,
+			Auth:   toAuthData(sa),
 		})
 	}
-	if !strings.HasPrefix(pat, "pt-") {
-		return nil, fmt.Errorf("poll: 输入不是有效 PAT (应以 pt- 开头)")
+
+	// Panel path: check if a new qoderwork auth file appeared since StartLogin.
+	files, err := hostAuthList()
+	if err == nil {
+		for _, f := range files {
+			// If this auth wasn't present at StartLogin time, it's new → success.
+			if f.CreatedAt.UnixNano() > lc.startedAt {
+				sa, err := hostAuthGet(f.AuthIndex)
+				if err == nil && sa != nil {
+					loginStates.Delete(state)
+					return okEnvelope(pluginapi.AuthLoginPollResponse{
+						Status: pluginapi.AuthLoginStatusSuccess,
+						Auth:   toAuthData(sa),
+					})
+				}
+			}
+		}
 	}
 
-	tok, err := exchangePATForJobToken(pat)
-	if err != nil {
-		return nil, fmt.Errorf("PAT 换 jobToken 失败: %w", err)
-	}
-	ui, _ := fetchUserInfo(tok.Token) // best-effort; auth still works without
-
-	sa := buildStoredAuthFromJobToken(pat, tok, ui)
-	loginStates.Delete(state)
 	return okEnvelope(pluginapi.AuthLoginPollResponse{
-		Status: pluginapi.AuthLoginStatusSuccess,
-		Auth:   toAuthData(sa),
+		Status:  pluginapi.AuthLoginStatusPending,
+		Message: "等待通过 QoderWork 面板导入 PAT",
 	})
 }
 

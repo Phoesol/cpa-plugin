@@ -106,8 +106,9 @@ const (
 // QoderWork associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
-	client  *http.Client
-	expires time.Time
+	client    *http.Client
+	expires   time.Time
+	startedAt int64 // unix nano, set when StartLogin creates the state
 }
 
 var (
