@@ -24,7 +24,7 @@ type rpcHostAuthGetResponse struct {
 	JSON      json.RawMessage `json:"json"`
 }
 
-// hostAuthList returns all workbuddy credentials known to the host.
+// hostAuthList returns all qoderwork credentials known to the host.
 func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
 	if err != nil {
@@ -45,7 +45,7 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	// Filter by filename prefix, NOT by Type/Provider: many existing auth
 	// files on disk don't carry a "type"/"provider" field (they were written
 	// before that convention), and EqualFold("", providerName) returns false
-	// for them — meaning we'd incorrectly exclude files that have the
+	// for them — meaning we'd incorrectly include files that have the
 	// workbuddy- prefix but no type field. Filename prefix is the only
 	// reliable cross-version discriminator.
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
