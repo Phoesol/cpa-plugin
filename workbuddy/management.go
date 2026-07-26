@@ -844,6 +844,21 @@ var (
 	accountCacheTTL = 45 * time.Second
 )
 
+// accountDetailFlight is a per-authID singleflight: concurrent dashboard /
+// reconcile callers for the same account share one upstream fetch instead of
+// stampeding the billing API. Without this, two parallel panel refreshes would
+// each spawn 3 goroutines per account → 6× upstream QPS and last-writer-wins
+// cache corruption.
+var accountDetailFlight sync.Map // authID -> *accountDetailCall
+
+type accountDetailCall struct {
+	done chan struct{}
+	plan string
+	ci   *checkinSummary
+	cr   *creditsSummary
+	errs []string
+}
+
 // cachedAccountDetails fetches plan/checkin/credits concurrently (upstream
 // round-trip dominates; 3 serial calls ≈ 3× latency). On any individual
 // failure the previous cached value is kept (stale-while-error) so a
@@ -860,6 +875,31 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 			return prev.plan, prev.checkin, prev.credits, nil
 		}
 	}
+
+	// Singleflight: only one goroutine performs the upstream fetch per authID.
+	// Others wait on the in-flight call's done channel and reuse its result.
+	call := &accountDetailCall{done: make(chan struct{})}
+	actual, loaded := accountDetailFlight.LoadOrStore(authID, call)
+	if loaded {
+		// Someone else is fetching — wait for their result.
+		other := actual.(*accountDetailCall)
+		<-other.done
+		// Re-read cache: fetcher already Stored; use whatever won the race.
+		if v, ok := accountCache.Load(authID); ok {
+			if e, ok2 := v.(*accountCacheEntry); ok2 {
+				return e.plan, e.checkin, e.credits, other.errs
+			}
+		}
+		return other.plan, other.ci, other.cr, other.errs
+	}
+	// We are the fetcher. Make sure waiters wake up and the flight entry is
+	// released even on panic.
+	defer func() {
+		call.plan, call.ci, call.cr, call.errs = plan, ci, cr, errs
+		close(call.done)
+		accountDetailFlight.Delete(authID)
+	}()
+
 	var (
 		wg      sync.WaitGroup
 		errMu   sync.Mutex
