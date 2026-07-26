@@ -171,21 +171,17 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
-	headers := func(r *http.Request) {
-		commonHeaders(r)
-		r.Header.Set("X-Refresh-Token", sa.Auth.RefreshToken)
-		if sa.Account.EnterpriseID != "" {
-			r.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
-		}
-		r.Header.Set("X-Auth-Refresh-Source", providerName)
-	}
-	data, status, err := doJSON(sharedHTTPClient(), http.MethodPost, endpointTokenRefreshFor(sa), headers, nil)
+	// Route via host.http.do so request-log captures the refresh call (H2
+	// compliance: was doJSON(sharedHTTPClient()) — bypassed host transport
+	// policy + logging for the X-Refresh-Token endpoint).
+	data, raw2, status, err := refreshCall(sa)
 	if err != nil {
 		if status >= 400 {
 			return nil, fmt.Errorf("refresh rejected (HTTP %d)", status)
 		}
 		return nil, fmt.Errorf("refresh: %w", err)
 	}
+	_ = raw2
 	var tok tokenData
 	if err := json.Unmarshal(data, &tok); err != nil || tok.AccessToken == "" {
 		return nil, fmt.Errorf("refresh_failed: no accessToken in response — the refresh token may be expired; re-login required")
