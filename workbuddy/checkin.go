@@ -182,31 +182,18 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	}
 }
 
-// checkinCandidate is a CN account that still needs daily check-in after prefilter.
-type checkinCandidate struct {
-	authIndex string
-	authID    string
-	nickname  string
-	sa        *storedAuth
-}
-
-// checkinPhase1Result is the outcome of classifyCheckinTargets: per-target
-// classification plus the side-effect results (errors / global / already) that
-// don't need a Phase 2 call.
-type checkinPhase1Result struct {
-	eligible      []checkinCandidate
-	results       []map[string]any
-	already       int
-	skippedGlobal int
-}
-
-// handleManualCheckin prefilters before any check-in call:
-//  1. Global → skip (trial pack, not daily check-in)
-//  2. CN already checked in today → skip (not a failure)
-//  3. Only remaining CN accounts call performCheckinCall
+// handleManualCheckin serves POST /checkin.
 //
-// Batch mode (empty auth_index) never returns Global/already as fake failures.
-// Single-account mode still returns a clear skip message for Global/already.
+// Single-account mode (body.auth_index set): runs checkinOneAccount directly —
+// one hostAuthGet + at most two upstream calls (status, then check-in). The
+// old three-phase classify/execute/summarize pipeline ran the same framework
+// for one account as for thirty (4 RPC + 5 HTTP + lock-held re-reads), which
+// routinely blew past the 30s management API timeout: the check-in succeeded
+// upstream but the response never reached the panel.
+//
+// Batch mode (empty auth_index): fans out checkinOneAccount per account
+// (sem=4), preserving input order and the {results, summary} response shape
+// the panel depends on.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
@@ -229,293 +216,149 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": "no matching account"}
 	}
 
-	// Phase 1: classify each account concurrently (no side effects).
-	phase1 := classifyCheckinTargets(targets, single)
-
-	// Phase 2: check-in only eligible CN accounts concurrently.
-	phase2 := executeCheckinBatch(phase1.eligible)
-
-	// Phase 3: aggregate results + summary counters.
-	return summarizeCheckinResults(phase1, phase2, len(targets))
-}
-
-// classifyCheckinTargets concurrently determines which targets are CN and
-// need a check-in call today. No state mutation happens here — Phase 2 owns
-// the side effects.
-//
-// Concurrent classify: N accounts × status API; serial was multi-second and
-// could trip browser/gateway cancel (502 context canceled).
-func classifyCheckinTargets(targets []pluginapi.HostAuthFileEntry, single bool) checkinPhase1Result {
-	type classResult struct {
-		idx    int
-		f      pluginapi.HostAuthFileEntry
-		sa     *storedAuth
-		kind   string // "err" | "global" | "already" | "eligible"
-		nick   string
-		errMsg string
-		ci     *checkinSummary // populated when kind == "already" so we don't refetch
-	}
-	classCh := make(chan classResult, len(targets))
+	results := make([]map[string]any, len(targets))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 6) // bound upstream concurrency
+	sem := make(chan struct{}, 4)
 	for i, f := range targets {
 		wg.Add(1)
 		go func(i int, f pluginapi.HostAuthFileEntry) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			sa, err := hostAuthGet(f.AuthIndex)
-			if err != nil {
-				classCh <- classResult{idx: i, f: f, kind: "err", errMsg: err.Error()}
-				return
-			}
-			nick := sa.Account.Nickname
-			if isGlobalDomain(sa.Auth.Domain) {
-				classCh <- classResult{idx: i, f: f, sa: sa, kind: "global", nick: nick}
-				return
-			}
-			// Prefer fresh status; fall back to cache today_checked_in if status fails.
-			ci, ciErr := fetchCheckinStatus(sa)
-			if ciErr != nil {
-				if cached := cachedCheckinToday(f.ID); cached != nil && *cached {
-					// Cache hit but fresh status failed — ci is nil here, so the
-					// already-branch below will need to refetch to refresh cache.
-					// That's correct: the cache may be stale.
-					classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick, ci: nil}
-					return
-				}
-				// Status unknown → still try check-in (upstream is idempotent).
-				classCh <- classResult{idx: i, f: f, sa: sa, kind: "eligible", nick: nick}
-				return
-			}
-			if ci != nil && ci.TodayCheckedIn {
-				classCh <- classResult{idx: i, f: f, sa: sa, kind: "already", nick: nick, ci: ci}
-				return
-			}
-			classCh <- classResult{idx: i, f: f, sa: sa, kind: "eligible", nick: nick}
+			results[i] = checkinOneAccount(f)
 		}(i, f)
 	}
-	go func() { wg.Wait(); close(classCh) }()
-	// Preserve input order for stable UI.
-	classified := make([]classResult, len(targets))
-	for cr := range classCh {
-		classified[cr.idx] = cr
-	}
+	wg.Wait()
 
-	out := checkinPhase1Result{}
-	for _, cr := range classified {
-		switch cr.kind {
-		case "err":
-			out.results = append(out.results, map[string]any{
-				"auth_index": cr.f.AuthIndex, "error": cr.errMsg, "skipped": false,
-			})
-		case "global":
-			out.skippedGlobal++
-			if single {
-				out.results = append(out.results, map[string]any{
-					"auth_index": cr.f.AuthIndex, "nickname": cr.nick,
-					"success": false, "skipped": true, "reason": "global",
-					"message": "国际版账号不支持签到，请使用领取专家加油包",
-				})
-			}
-		case "already":
-			out.already++
-			// Keep checkin in cache so light-load dashboard shows 已签到.
-			// Two sub-cases:
-			//   - ci != nil: fresh fetch succeeded during classify → use it to
-			//     update cache (no second fetch needed).
-			//   - ci == nil: cache fallback hit during classify → cache is
-			//     already current, no update needed.
-			// (M2 perf: was 2x fetchCheckinStatus per already-checked-in account.)
-			if cr.ci != nil {
-				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(cr.f.ID); ok {
-					prev, _ = v.(*accountCacheEntry)
-				}
-				entry := &accountCacheEntry{checkin: cr.ci, fetched: time.Now()}
-				if prev != nil {
-					entry.credits = prev.credits
-					entry.plan = prev.plan
-				}
-				accountCache.Store(cr.f.ID, entry)
-			}
-			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(cr.f.AuthIndex, cr.f.ID, true)
-			}
-			if single {
-				out.results = append(out.results, map[string]any{
-					"auth_index": cr.f.AuthIndex, "nickname": cr.nick,
-					"success": true, "skipped": true, "reason": "already",
-					"message": "already checked in today",
-				})
-			}
-		case "eligible":
-			out.eligible = append(out.eligible, checkinCandidate{
-				authIndex: cr.f.AuthIndex, authID: cr.f.ID, nickname: cr.nick, sa: cr.sa,
-			})
-		}
-	}
-	return out
-}
-
-// executeCheckinBatch runs the actual check-in calls for eligible CN accounts
-// under per-account mutex (B4). Each goroutine re-reads sa + status under the
-// lock so a parallel tab can't double-checkin.
-func executeCheckinBatch(eligible []checkinCandidate) []map[string]any {
-	type checkinOut struct {
-		idx int
-		out map[string]any
-	}
-	outCh := make(chan checkinOut, len(eligible))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 4)
-	for i, c := range eligible {
-		wg.Add(1)
-		go func(i int, c checkinCandidate) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			mu := checkinLockFor(c.authIndex)
-			mu.Lock()
-			defer mu.Unlock()
-
-			// Re-read under lock: another tab may have just checked in.
-			sa := c.sa
-			if sa2, err := hostAuthGet(c.authIndex); err == nil && sa2 != nil {
-				sa = sa2
-			}
-			if ci, _ := fetchCheckinStatus(sa); ci != nil && ci.TodayCheckedIn {
-				outCh <- checkinOut{idx: i, out: map[string]any{
-					"auth_index": c.authIndex, "nickname": c.nickname,
-					"success": true, "skipped": true, "reason": "already",
-					"message": "already checked in today",
-				}}
-				// Keep checkin in cache so light-load dashboard shows 已签到.
-				// Merge with prev entry so credits/plan aren't dropped on this
-				// fast path (v0.6.31 fix: early-already used to wipe them).
-				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(c.authID); ok {
-					prev, _ = v.(*accountCacheEntry)
-				}
-				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-				if prev != nil {
-					entry.credits = prev.credits
-					entry.plan = prev.plan
-				}
-				accountCache.Store(c.authID, entry)
-				if lifecycleEnabled() {
-					_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
-				}
-				return
-			}
-			res, err := performCheckinCall(sa)
-			out := map[string]any{"auth_index": c.authIndex, "nickname": c.nickname, "skipped": false}
-			if err != nil {
-				out["error"] = err.Error()
-				out["success"] = false
-			} else {
-				// performCheckinCall surfaces business errors as success=false+message.
-				for k, v := range res {
-					out[k] = v
-				}
-				if msg, _ := out["message"].(string); msg != "" && out["success"] == false {
-					// Map "already" style business messages to done, not hard fail.
-					low := strings.ToLower(msg)
-					if strings.Contains(low, "already") || strings.Contains(msg, "已签") || strings.Contains(msg, "今日") {
-						out["success"] = true
-						out["skipped"] = true
-						out["reason"] = "already"
-					}
-				}
-				if _, ok := out["success"]; !ok {
-					out["success"] = true
-				}
-			}
-			// Keep checkin in cache so light-load dashboard shows 已签到.
-			// Re-fetch checkin status after successful checkin call.
-			if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-				var prev *accountCacheEntry
-				if v, ok := accountCache.Load(c.authID); ok {
-					prev, _ = v.(*accountCacheEntry)
-				}
-				entry := &accountCacheEntry{checkin: ci2, fetched: time.Now()}
-				if prev != nil {
-					entry.credits = prev.credits
-					entry.plan = prev.plan
-				}
-				accountCache.Store(c.authID, entry)
-			} else {
-				// Fallback: keep existing cache (may be stale), don't delete.
-				if _, ok := accountCache.Load(c.authID); !ok {
-					accountCache.Store(c.authID, &accountCacheEntry{
-						checkin: &checkinSummary{TodayCheckedIn: true},
-						fetched: time.Now(),
-					})
-				}
-			}
-			if lifecycleEnabled() {
-				_, _ = reconcileOneAccount(c.authIndex, c.authID, true)
-			}
-			outCh <- checkinOut{idx: i, out: out}
-		}(i, c)
-	}
-	go func() { wg.Wait(); close(outCh) }()
-	phase2 := make([]map[string]any, len(eligible))
-	for o := range outCh {
-		phase2[o.idx] = o.out
-	}
-	return phase2
-}
-
-// summarizeCheckinResults folds Phase 1 + Phase 2 outcomes into the response
-// payload the panel expects. Counter rules (kept stable since v0.6.30):
-//   - error non-nil                      → fail
-//   - reason=="already"                  → already (counted once)
-//   - success==true (no reason)          → success
-//   - success==false,error==nil          → already if msg says so, else fail
-func summarizeCheckinResults(p1 checkinPhase1Result, phase2 []map[string]any, total int) map[string]any {
-	results := append([]map[string]any{}, p1.results...)
-	successN, failN, already2 := 0, 0, 0
-	for _, out := range phase2 {
+	// Summary counters (field names are a panel contract — panel.html
+	// checkinAll reads success/already/fail/skipped_global/eligible).
+	successN, failN, alreadyN, globalN, eligibleN := 0, 0, 0, 0, 0
+	for _, out := range results {
 		if out == nil {
 			continue
 		}
-		results = append(results, out)
 		if out["error"] != nil {
 			failN++
 			continue
 		}
 		reason, _ := out["reason"].(string)
-		if reason == "already" {
-			already2++
+		switch reason {
+		case "already":
+			alreadyN++
+			continue
+		case "global":
+			globalN++
 			continue
 		}
+		eligibleN++
 		if out["success"] == true {
 			successN++
-			continue
-		}
-		if out["success"] == false {
-			// business soft-fail without error field
-			msg, _ := out["message"].(string)
-			if strings.Contains(strings.ToLower(msg), "already") || strings.Contains(msg, "已签") {
-				already2++
-			} else {
-				failN++
-			}
+		} else {
+			failN++
 		}
 	}
 	return map[string]any{
 		"results": results,
 		"summary": map[string]any{
-			"total":          total,
-			"eligible":       len(p1.eligible),
+			"total":          len(targets),
+			"eligible":       eligibleN,
 			"success":        successN,
-			"already":        p1.already + already2,
-			"skipped_global": p1.skippedGlobal,
+			"already":        alreadyN,
+			"skipped_global": globalN,
 			"fail":           failN,
-			"attempted":      len(p1.eligible),
+			"attempted":      eligibleN,
 		},
 	}
+}
+
+// checkinOneAccount performs the daily check-in for one account with the
+// minimum number of round-trips:
+//
+//	hostAuthGet ×1 (RPC) → domain gate → fetchCheckinStatus ×1 (failure
+//	tolerated, upstream is idempotent) → performCheckinCall ×1.
+//
+// No lock-held re-reads, no lifecycle reconcile (that is the scheduled
+// runAutoCheckin path's job), no redundant status refetches. Cache updates
+// merge into the previous entry so credits/plan survive.
+func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
+	out := map[string]any{"auth_index": f.AuthIndex}
+
+	sa, err := hostAuthGet(f.AuthIndex)
+	if err != nil {
+		out["error"] = err.Error()
+		return out
+	}
+	out["nickname"] = sa.Account.Nickname
+
+	if isGlobalDomain(sa.Auth.Domain) {
+		out["success"] = false
+		out["skipped"] = true
+		out["reason"] = "global"
+		out["message"] = "国际版账号不支持签到，请使用领取专家加油包"
+		return out
+	}
+
+	mu := checkinLockFor(f.AuthIndex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Status probe: a failure here is NOT fatal — the check-in call below is
+	// idempotent upstream and its business message tells us "already" anyway.
+	ci, ciErr := fetchCheckinStatus(sa)
+	if ciErr == nil && ci != nil && ci.TodayCheckedIn {
+		mergeCheckinCache(f.ID, ci)
+		out["success"] = true
+		out["skipped"] = true
+		out["reason"] = "already"
+		out["message"] = "already checked in today"
+		return out
+	}
+
+	res, err := performCheckinCall(sa)
+	if err != nil {
+		out["error"] = err.Error()
+		out["success"] = false
+		return out
+	}
+	for k, v := range res {
+		out[k] = v
+	}
+	// Business soft-fail ("already checked in" family) → done, not failure.
+	if msg, _ := out["message"].(string); msg != "" && out["success"] == false {
+		low := strings.ToLower(msg)
+		if strings.Contains(low, "already") || strings.Contains(msg, "已签") || strings.Contains(msg, "今日") {
+			out["success"] = true
+			out["skipped"] = true
+			out["reason"] = "already"
+		}
+	}
+	if _, ok := out["success"]; !ok {
+		out["success"] = true
+	}
+
+	// Post-call cache refresh: one extra status fetch at most; on failure
+	// write a TodayCheckedIn placeholder rather than leaving the panel stale.
+	if ci2, err2 := fetchCheckinStatus(sa); err2 == nil && ci2 != nil {
+		mergeCheckinCache(f.ID, ci2)
+	} else {
+		mergeCheckinCache(f.ID, &checkinSummary{TodayCheckedIn: true})
+	}
+	return out
+}
+
+// mergeCheckinCache stores the latest check-in snapshot while preserving the
+// credits/plan fields of any previous cache entry (merge, not replace).
+func mergeCheckinCache(authID string, ci *checkinSummary) {
+	var prev *accountCacheEntry
+	if v, ok := accountCache.Load(authID); ok {
+		prev, _ = v.(*accountCacheEntry)
+	}
+	entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+	if prev != nil {
+		entry.credits = prev.credits
+		entry.plan = prev.plan
+	}
+	accountCache.Store(authID, entry)
 }
 
 func checkinLockFor(authIndex string) *sync.Mutex {
