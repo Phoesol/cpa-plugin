@@ -72,7 +72,7 @@
 - [x] **L2** keepalive 自动刷新验证 → v0.1.13 / commit de8ee8b（tokenData JSON tag 错误 camelCase→snake_case，删 tokenData 统一用 jobTokenResponse）
 - [x] **L3** 子 agent 全面死代码扫描 → 部分（jsonBool/jsonI64/jsonStr 删除；C-ABI 调度函数不适用 grep 死代码分析）
 - [x] **L4** 测试文件清理 → 无 _test.go 文件（已删）
-- [ ] **L5** 动态模型清单
+- [x] **L5** 动态模型清单 → v0.1.15 / commit a844266（COSY 签名调 /algo/api/v2/model/list，解析 chat scene）
 - [ ] **L6** auth 文件别名映射
 - [x] **L7** lifecycle/scheduler 审计 → go vet clean（C-ABI 调度，grep 不适用）
 - [ ] **L8** stream/usage/cache 死代码扫描

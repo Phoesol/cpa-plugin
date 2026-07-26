@@ -102,23 +102,6 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 
 // fetchDynamicModels calls the QoderWork API to get the latest model list.
 // Falls back to the hardcoded list on any error.
-// extractAccessToken handles both flat (CPA UI) and nested (plugin OAuth) auth file shapes.
-func extractAccessToken(raw []byte) (string, bool) {
-	// flat shape from CPA-Manager-Plus UI
-	var flat struct {
-		AccessToken string `json:"accessToken"`
-	}
-	if err := json.Unmarshal(raw, &flat); err == nil && strings.TrimSpace(flat.AccessToken) != "" {
-		return flat.AccessToken, true
-	}
-	// nested shape from plugin OAuth
-	var nested storedAuth
-	if err := json.Unmarshal(raw, &nested); err == nil && strings.TrimSpace(nested.Auth.AccessToken) != "" {
-		return nested.Auth.AccessToken, true
-	}
-	return "", false
-}
-
 // callModelsAPI GETs /algo/api/v2/model/list from the QoderWork gateway
 // with COSY signing (same as inference). Returns plain JSON (not QoderEncoding).
 // Falls back to wbModels() on any error.
