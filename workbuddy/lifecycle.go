@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -194,9 +195,25 @@ func labelForAuth(sa *storedAuth) string {
 
 // authFileNameFor matches toAuthData naming: always workbuddy-<uid>.json when UID is known.
 // Bare "workbuddy.json" is legacy single-account only (no UID).
+var unsafeUIDChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+
+func sanitizeUIDForFileName(uid string) string {
+	uid = strings.TrimSpace(uid)
+	uid = unsafeUIDChars.ReplaceAllString(uid, "_")
+	if uid == "" || uid == "." || uid == ".." {
+		return ""
+	}
+	if len(uid) > 64 {
+		uid = uid[:64]
+	}
+	return uid
+}
+
 func authFileNameFor(sa *storedAuth) string {
-	if sa != nil && strings.TrimSpace(sa.Account.UID) != "" {
-		return "workbuddy-" + strings.TrimSpace(sa.Account.UID) + ".json"
+	if sa != nil {
+		if uid := sanitizeUIDForFileName(sa.Account.UID); uid != "" {
+			return "workbuddy-" + uid + ".json"
+		}
 	}
 	return authFileName
 }
@@ -610,6 +627,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 		}
 		rememberLifecycleState(authID, true, note)
 		accountCache.Delete(authID)
+		clearActiveAuthIfMatch(authID)
 		return nil
 	}
 	if err := deleteAuthFileInDir(path, filepath.Dir(path)); err != nil {
@@ -627,6 +645,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	}
 	lifecycleState.Delete(authID)
 	accountCache.Delete(authID)
+	clearActiveAuthIfMatch(authID)
 	return nil
 }
 
@@ -887,9 +906,10 @@ func invalidateAccountCredits(authID, authUID string) {
 	invalidateCredits := func(id string) {
 		if v, ok := accountCache.Load(id); ok {
 			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				e.credits = nil
-				e.fetched = time.Now()
-				accountCache.Store(id, e)
+				fresh := *e
+				fresh.credits = nil
+				fresh.fetched = time.Now()
+				accountCache.Store(id, &fresh)
 			}
 		}
 	}

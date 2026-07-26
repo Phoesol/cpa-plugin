@@ -315,6 +315,20 @@ function progressHTML(c){
   const when=c.fetched_at?` · 快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}`:'';
   return `<div class="pb"><div class="pb-label"><span>可用 ${remain}</span><span>已用 ${used} · ${pct}%</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total}${c.pack_count?` · ${c.pack_count} 个包`:''}${when}</div></div>`;
 }
+function bindCardActions(root){
+  (root||document).querySelectorAll("[data-action]").forEach(btn=>{
+    if(btn._bound) return;
+    btn._bound=true;
+    btn.addEventListener("click", ev=>{
+      const act=ev.currentTarget.dataset.action;
+      const idx=ev.currentTarget.dataset.authIndex;
+      if(act==="checkin") checkin(idx, ev.currentTarget);
+      else if(act==="claim") claimTrial(idx, ev.currentTarget);
+      else if(act==="select") selectAuth(idx, ev.currentTarget);
+      else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
+    });
+  });
+}
 function card(a){
   const plan=(a.plan||"unknown").toLowerCase();
   const ci=a.checkin||{}, cr=a.credits;
@@ -330,19 +344,19 @@ function card(a){
     if(a.trial_claimed){
       actionHTML='<button class="done" disabled="disabled">已领取</button>';
     }else{
-      actionHTML=`<button class="sec" onclick="claimTrial('${esc(a.auth_index)}',this)">领取专家加油包</button>`;
+      actionHTML=`<button class="sec" data-action="claim" data-auth-index="${esc(a.auth_index)}">领取专家加油包</button>`;
     }
   }else{
     const checked=ci.today_checked_in;
     const btnClass=checked?"done":"sec";
     const btnText=checked?"已签到":"签到";
     const btnDisabled=checked?" disabled=\"disabled\"":"";
-    actionHTML=`<button class="${btnClass}" onclick="checkin('${esc(a.auth_index)}',this)"${btnDisabled}>${btnText}</button>`;
+    actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   }
   const selectBtn=selected
     ? `<button class="done" disabled="disabled">使用中</button>`
-    : (disabled?``:`<button class="sec" onclick="selectAuth('${esc(a.auth_index)}',this)">选用</button>`);
-  const refreshBtn=`<button class="sec" onclick="refreshCredits('${esc(a.auth_index)}',this)" title="刷新积分">刷新</button>`;
+    : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
+  const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
@@ -399,7 +413,11 @@ function updateOneCard(a){
   // Build new card HTML and replace.
   const tmp=document.createElement('div');
   tmp.innerHTML=card(a);
-  if(tmp.firstChild) el.replaceWith(tmp.firstChild);
+  if(tmp.firstChild){
+    const newCard=tmp.firstChild;
+    el.replaceWith(newCard);
+    bindCardActions(newCard);
+  }
   filterRegion(currentFilter, null);
   // Update summary + re-check selection when all done.
   const all=lastAccounts||[];
@@ -422,7 +440,10 @@ function updateOneCard(a){
         }
       });
       const g=document.getElementById("grid");
-      if(g) g.innerHTML=accountsForFilter(all).map(card).join("");
+      if(g){
+        g.innerHTML=accountsForFilter(all).map(card).join("");
+        bindCardActions(g);
+      }
       filterRegion(currentFilter, null);
     }).catch(()=>{});
   }
@@ -543,7 +564,7 @@ async function api(path, opts={}){
   if(Date.now()<authFailUntil){
     throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
   }
-  const r=await fetch(API+path,{...opts,headers:{...(opts.headers||{}),...authHeaders(k)}});
+  const r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
   if(r.status===401){
     authFailCount++;
     sessionStorage.removeItem(SS_KEY);
@@ -617,6 +638,7 @@ async function load(force, btn){
       return;
     }
     g.innerHTML=accounts.map(card).join("");
+    bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
     // Lazy-load credits for cards that don't have them yet.
@@ -701,7 +723,10 @@ async function selectAuth(idx, btn){
     // Re-render from local state for instant feedback, then soft reload
     (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
     const g=document.getElementById("grid");
-    if(g) g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
+    if(g){
+      g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
+      bindCardActions(g);
+    }
     filterRegion(currentFilter, null);
   }catch(e){
     toast("选用失败","err",e.message||String(e));

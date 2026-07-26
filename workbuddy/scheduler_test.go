@@ -34,7 +34,14 @@ func parsePickResponse(t *testing.T, raw []byte) pluginapi.SchedulerPickResponse
 func resetActiveAuth(t *testing.T) {
 	t.Helper()
 	setActiveAuthID("")
-	t.Cleanup(func() { setActiveAuthID("") })
+	// Pre-v0.6.31 tests assume plugin handles routing; default mode is now off.
+	// Flip to credits mode for the duration of each pick test so behavior stays
+	// identical to before the scheduler_mode fix.
+	restoreMode := setSchedulerMode(schedulerModeCredits)
+	t.Cleanup(func() {
+		setActiveAuthID("")
+		restoreMode()
+	})
 }
 
 func TestSchedulerPick_NonWorkbuddy_Defers(t *testing.T) {
@@ -42,7 +49,7 @@ func TestSchedulerPick_NonWorkbuddy_Defers(t *testing.T) {
 	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
 		Provider: "other",
 		Candidates: []pluginapi.SchedulerAuthCandidate{
-			{ID: "ds-1", Provider: "dashscope"},
+			{ID: "x", Provider: "other"},
 		},
 	}))
 	if err != nil {
@@ -51,6 +58,30 @@ func TestSchedulerPick_NonWorkbuddy_Defers(t *testing.T) {
 	resp := parsePickResponse(t, raw)
 	if resp.Handled {
 		t.Fatal("non-workbuddy candidates should defer")
+	}
+}
+
+// TestSchedulerPick_OffMode_Defers covers the v0.6.31 fix: scheduler_mode=off
+// must make the plugin decline to handle routing, even for workbuddy candidates.
+func TestSchedulerPick_OffMode_Defers(t *testing.T) {
+	setActiveAuthID("")
+	restoreMode := setSchedulerMode(schedulerModeOff)
+	t.Cleanup(func() {
+		setActiveAuthID("")
+		restoreMode()
+	})
+	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wb-only", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	resp := parsePickResponse(t, raw)
+	if resp.Handled {
+		t.Fatal("scheduler_mode=off should defer to built-in scheduler")
 	}
 }
 

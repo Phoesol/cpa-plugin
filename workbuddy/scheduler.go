@@ -48,10 +48,24 @@ func loadedSchedulerMode() string {
 // handleSchedulerPick selects a workbuddy auth candidate based on the
 // panel-selected active account. Non-workbuddy candidates are always deferred
 // (Handled: false) so the built-in scheduler handles them.
+//
+// scheduler_mode:
+//   - "off"     → plugin does NOT handle routing; defer everything to built-in.
+//   - "credits" → plugin picks via panel-selected active account (sticky, with
+//     fallback when that account becomes exhausted/disabled).
+//
+// Default is off (see schedulerMode init). Users opting into the plugin's
+// routing should set scheduler_mode: credits in plugin config.
 func handleSchedulerPick(raw []byte) ([]byte, error) {
 	var req pluginapi.SchedulerPickRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+
+	// v0.6.31: actually honor the scheduler_mode toggle. Previously the config
+	// was parsed but never read here, so "off" silently behaved like "credits".
+	if loadedSchedulerMode() != schedulerModeCredits {
+		return okEnvelope(pluginapi.SchedulerPickResponse{Handled: false})
 	}
 
 	// Collect workbuddy candidates only.

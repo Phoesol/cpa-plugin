@@ -1,5 +1,112 @@
 # Changelog
 
+## 0.7.0
+
+### Compliance — CPA native patterns
+本次大版本把「自建通道」全部替换为 CPA 官方提供的 RPC / 能力接口，
+对齐 `sdk/pluginapi` 的设计意图。生产路径 100% 走宿主桥接，插件不再
+绕过宿主审计 / request-log / transport policy。
+
+- **所有上游 HTTP 调用走 `host.http.do` / `host.http.do_stream`**：
+  - `models API`、`billing API`、`usage 上报`、`chat completions`（流式 + 非流式）
+    全部从 `sharedHTTPClient().Do` 切到 `hostHTTPDo` / `hostHTTPDoStream`。
+  - 宿主 request-log 现在能捕获插件的出站请求和原始响应（之前完全看不到）。
+  - 宿主 transport policy（proxy、超时、连接池）对插件上游调用生效。
+  - `sharedHTTPClient` 降级为 fallback 专用：仅当宿主桥不可用（单元测试 /
+    老版本 CPA）时使用。新代码直接调用 `sharedHTTPClient` 视为合规 bug。
+- **`hostStreamReader` 适配层**：把宿主桥的 32KB 任意字节块适配为 `io.Reader`，
+  `bufio.Scanner` 的 SSE 行切分逻辑不变，pump / collect / aggregate 全部透明迁移。
+- **`UsagePlugin` 能力声明 + `handleUsage` RPC handler**：
+  - 注册能力 `usage_plugin: true`，宿主每次请求完成后会把规范化的
+    `pluginapi.UsageRecord` 推送给插件。
+  - 插件在 `handleUsage` 里把 record 转发到 CPAMP，与宿主 `DefaultManager`
+    的记录并行，不再重复也不遗漏。
+  - 旧路径 `publishUsage` 保留向后兼容（老版本 CPA 没接 UsagePlugin 时仍可
+    上报），新路径 `handleUsage` 同步触发，CPAMP 侧基于 (timestamp + auth +
+    model + total_tokens) 幂等去重。
+- **`reportUsageToCPAMP` 重命名为 `forwardUsageToCPAMP` 并走 host.http.do**：
+  CPAMP 上报自身也走宿主桥，宿主能看到插件的运维流量。
+
+### Architecture notes
+- `hostBridgeAvailable()` 检查 `hostAPI.call` 是否为 nil，统一决定是否
+  fallback。生产环境永远为 true，单元测试永远为 false（无宿主）。
+- 所有 `*Direct` 函数仅服务测试；生产路径不经过。
+- 宿主侧 `sanitizePluginRequest` 会把 `ExecutorRequest.HTTPClient` 置 nil
+  （跨 c-shared 边界接口无法传输），所以**插件不可能用宿主注入的
+  HTTPClient**——`host.http.*` RPC 是 c-shared 插件访问宿主 transport 的
+  唯一合规方式，本版本全部采用。
+
+## 0.6.31
+
+### Security
+- **UID 路径穿越修复**：`authFileNameFor` 新增 `sanitizeUIDForFileName` 白名单
+  （`[^a-zA-Z0-9_-]+` → `_`、长度 ≤64、拒绝 `.`/`..`），导入凭证的
+  `workbuddy-<uid>.json` 不再可能被 `../` 注入到任意路径。
+- **refresh_token 停止泄露到 chat 上游**：`backendHeaders` 移除
+  `X-Refresh-Token`。refresh_token 是长期凭证，只在 refresh 端点用；之前每次
+  chat completion 都附带它，上游日志一旦记录请求头即等同账号被盗。
+- **插件层 management 鉴权 + 限流**：`handleManagement` 入口对所有 POST /
+  写端点新增插件层防护：constant-time Bearer 比对（`crypto/subtle`），
+  per-IP token-bucket 限流（容量 5、每 6s 1 个）。配置方式：
+  `config_yaml management_key:` 或 env `WB_MANAGEMENT_KEY`。空则保持
+  历史行为（仅依赖宿主鉴权）。
+- **panel.html XSS 修复**：4 处 `onclick="...('${esc(auth_index)}',this)"`
+  改为 `data-action` + `data-auth-index` + `addEventListener`。`esc()` 只
+  转义 HTML 不防 JS 字符串上下文注入。
+- **panel.html CSRF 缓解**：`fetch` 显式 `credentials:'omit'`，面板纯靠
+  Authorization Bearer，不再隐式带 cookie。
+- **redactSecrets 兜底裸 JWT**：新增 `redactREJWTLoose` 正则，匹配不带
+  `Bearer` 前缀、`access_token` key 的 `eyJ…` 两段/三段 JWT。
+
+### Bug Fixes
+- `invalidateAccountCredits` 数据竞争：直接改 sync.Map 共享 entry 的字段
+  （`e.credits = nil`），并发 dashboard / reconcile / chat 后置 invalidate
+  会拿到撕裂状态。改为 `fresh := *e; Store(&fresh)` 值拷贝，与其他 4 处
+  写法一致。
+- `handleManualCheckin` "early already" 路径丢 credits/plan：直接构造
+  `accountCacheEntry{checkin: ci}` 覆盖整个 entry，签到后面板积分消失。
+  改为 merge prev 的 credits/plan。
+- `configure` 嵌套锁：在 `checkinAutoMu` 内嵌套获取 `lifecycleAutoMu` /
+  `schedulerModeMu`，未来加反向获取路径即死锁。改为两阶段：无锁解析到
+  局部变量，再分别单锁写入。
+- `scheduler_mode: off` 配置断链：configure 解析但 `handleSchedulerPick`
+  从不读取，"off" 实际表现为 "credits"。现在 off 正确 defer 给内置 scheduler。
+- 删除 Global 账号后 `activeAuthID` 残留指向已删 ID：`deleteAuth` 两个成功
+  路径现在都调 `clearActiveAuthIfMatch(authID)`。
+- `runAutoCheckin` 重复 `fetchCheckinStatus` + 变量 shadow：原代码内层
+  `ci` shadow 外层，且第二次调用与第一次状态可能不一致。改为单次调用，
+  签到成功才 refresh。
+- `out[:0]` 共享底层数组：`filtered := out[:0]` 复用底层数组在 range 中
+  写入，改为 `make([]wbAccount, 0, len(out))`。
+- `pumpUpstreamStream` 无 context：`http.NewRequest` 无 context，客户端
+  断开后 goroutine 一直读到 120s 超时。改为 `NewRequestWithContext` +
+  cancel 传入 pump，所有退出路径释放。
+
+### Performance
+- **热路径 4 次 JSON 序列化合并为 1 次**：新增 `prepareUpstreamBody` 统一
+  `forceStreamBody` + `normalizeToolsForUpstream` + `rewriteSystemForUpstream`
+  + `ensureSystemMessage` + `rewriteModelInBody`，单次 unmarshal + 单次
+  marshal。每次 chat completion 省 4-5 个 JSON 往返。
+- **`runAutoCheckin` 串行改并发**：抽出 `processAutoCheckinAccount`，主循环
+  `sem=4` 并发。N 账号从 3N 串行 HTTP 降到并发 4 路。
+- **`cachedAccountDetails` 加 singleflight**：per-authID `sync.Map` + done
+  channel。并发 dashboard / reconcile 对同一账号只跑 1 次上游 fetch，
+  其他 goroutine 等结果，消除 6x upstream QPS + last-writer-wins。
+- **冒泡排序改 sort.Slice**：`pruneAccountCacheSoftCap` 从 O(n²) 降到 O(n log n)。
+
+### Refactor
+- **handleManualCheckin 273 行拆分**：`classifyCheckinTargets` /
+  `executeCheckinBatch` / `summarizeCheckinResults` 三段独立函数，各自
+  单一职责，便于单测。
+- **management BasePath 不再硬编码**：register 时缓存宿主注入的 BasePath，
+  handleManagement 用 cached 值。宿主未来版本化路径不会失效。
+- 死代码清理：删 `upstreamBase` legacy 常量、`usageReportConfigured` 无人
+  调用、`buildDashboard` 包装函数。
+
+### Tests
+- 新增 `TestSchedulerPick_OffMode_Defers` 覆盖 scheduler_mode=off 行为。
+- 全套 115 tests + `-race` 通过。
+
 ## 0.6.29
 
 ### Fixed
