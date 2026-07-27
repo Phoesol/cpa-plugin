@@ -205,7 +205,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
     <div class="modal-bd">
       <p class="hint">到 <a href="https://qoder.com.cn/settings/personal-access-tokens" target="_blank" rel="noopener">qoder.com.cn → 设置 → Personal Access Tokens</a> 创建一个 PAT（pt- 开头），粘贴到下方。插件会自动换取 jobToken 并保存为 <code>qoderwork-&lt;uid&gt;.json</code>。</p>
-      <input id="importPAT" type="password" placeholder="pt-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" style="width:100%;padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg);"/>
+      <input id="importPAT" type="password" placeholder="pt-xxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off" style="width:100%;padding:8px 10px;font-family:ui-monospace,monospace;font-size:13px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);"/>
       <p class="hint" style="margin-top:8px;opacity:0.7">PAT 长期有效（可在创建时设置过期时间）。插件存储 PAT 用于 jrt- 过期后自动续期，无需重新导入。</p>
     </div>
     <div class="modal-ft">
@@ -295,13 +295,6 @@ function markCheckinDone(btn){
   btn.innerHTML="已签到";
   btn.dataset.orig="已签到";
 }
-function markTrialDone(btn){
-  if(!btn)return;
-  btn.disabled=true;
-  btn.className="done";
-  btn.innerHTML="已领取";
-  btn.dataset.orig="已领取";
-}
 function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used||0);return c.total_remain+" 余 / "+t+" 总"}
 function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function progressHTML(c){
@@ -354,7 +347,7 @@ function card(a){
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${esc(plan)}">${esc(a.plan||"-")}</span>`;
   const display=(a.nickname||a.label||a.name||"").replace(/^qoderwork-?/i,"");
   const nick=display||("u"+(a.uid||"").slice(-8));
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
@@ -616,8 +609,8 @@ async function load(force, btn){
     const d = force
       ? await api("/refresh", {method:"POST"})
       : await api("/accounts");
-    document.getElementById("autoToggle").checked=!!d.checkin_auto;
-    document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
+    const at=document.getElementById("autoToggle"); if(at) at.checked=!!d.checkin_auto;
+    const st=document.getElementById("svtime"); if(st) st.textContent=d.server_time?("服务器时间 "+d.server_time):"";
     if(d.error){
       g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
       if(force) toast("刷新失败", "err", d.error);
@@ -732,7 +725,7 @@ async function selectAuth(idx, btn){
     const region="CN";
     toast("已选用","ok",who+" · "+region);
     // Re-render from local state for instant feedback, then soft reload
-    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
+    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_index===activeAuthId);});
     const g=document.getElementById("grid");
     if(g){
       g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
@@ -807,12 +800,12 @@ async function checkinAll(btn){
     if(ok||already){
       document.querySelectorAll("#grid .card").forEach(c=>{
         if((c.dataset.region||"cn")==="cn"){
-          const b=c.querySelector("button.sec,button.done");
+          const b=c.querySelector('[data-action="checkin"]');
           if(b && /签到|处理中/.test(b.textContent||"")) markCheckinDone(b);
         }
       });
     }
-    await load(false);
+    await load(true);
   }catch(e){toast("批量签到失败","err",e.message)}
   // load() re-renders grid; only restore toolbar button
   busy(btn,false);
@@ -825,8 +818,8 @@ async function toggleAuto(on){
 function openImportModal(){
   const m=document.getElementById("importModal");
   m.classList.add("show");
-  const ta=document.getElementById("importRaw");
-  if(ta) setTimeout(()=>ta.focus(),0);
+  const ta=document.getElementById("importPAT");
+  if(ta) setTimeout(()=>ta.focus(),50);
 }
 function closeImportModal(){
   document.getElementById("importModal").classList.remove("show");

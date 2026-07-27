@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -41,12 +42,18 @@ func streamEmitError(streamID, message string) {
 	_ = streamEmit(streamID, errJSON)
 }
 
+var streamCloseOnce sync.Map // streamID -> sync.Once
+
 func streamClose(streamID string) {
 	if streamID == "" {
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"stream_id": streamID})
-	_, _ = hostCall(pluginabi.MethodHostStreamClose, body)
+	actual, _ := streamCloseOnce.LoadOrStore(streamID, &sync.Once{})
+	once := actual.(*sync.Once)
+	once.Do(func() {
+		body, _ := json.Marshal(map[string]any{"stream_id": streamID})
+		_, _ = hostCall(pluginabi.MethodHostStreamClose, body)
+	})
 }
 
 func streamHeaders() http.Header {

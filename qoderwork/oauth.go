@@ -360,7 +360,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	lc := v.(*loginCtx)
 	if time.Now().After(lc.expires) {
 		loginStates.Delete(state)
-		return nil, fmt.Errorf("poll: login expired (5 min timeout)")
+		return nil, fmt.Errorf("poll: login expired (10 min timeout)")
 	}
 
 	// Legacy path: user pasted PAT into the OAuth modal callback.
@@ -383,7 +383,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthData(sa),
+			Auth:   toAuthDataForRefresh(sa),
 		})
 	}
 
@@ -403,7 +403,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthData(sa),
+			Auth:   toAuthDataForRefresh(sa),
 		})
 	}
 
@@ -417,7 +417,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 					loginStates.Delete(state)
 					return okEnvelope(pluginapi.AuthLoginPollResponse{
 						Status: pluginapi.AuthLoginStatusSuccess,
-						Auth:   toAuthData(sa),
+						Auth:   toAuthDataForRefresh(sa),
 					})
 				}
 			}
@@ -463,7 +463,11 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 	// When ui is nil (fast PollLogin path), derive a readable nickname from
 	// the uid so the panel doesn't fall back to the raw filename label.
 	if nickname == "" {
-		nickname = "u" + uid[len(uid)-8:]
+		if len(uid) > 8 {
+			nickname = "u" + uid[len(uid)-8:]
+		} else {
+			nickname = "u" + uid
+		}
 	}
 	return &storedAuth{
 		Auth: storedTokens{
@@ -540,6 +544,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		sa.Auth.AccessToken = tok.accessToken()
 		sa.Auth.RefreshToken = tok.RefreshToken
 		sa.Auth.ExpiresAt = preserveExpiry(deviceExpiryUnix(tok), sa.Auth.ExpiresAt)
+		invalidateCosySession(sa.Account.UID)
 		return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
 	}
 
@@ -560,6 +565,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Millisecond).Unix(),
 		sa.Auth.ExpiresAt,
 	)
+	invalidateCosySession(sa.Account.UID)
 	// Host persists the refreshed credential itself after Refresh returns
 	// (conductor.go refreshAuth → m.Update → persist). Writing from the
 	// plugin too would double-write the file.

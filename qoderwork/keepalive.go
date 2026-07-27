@@ -153,6 +153,10 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	if err := persistAuthTokens(authIndex, sa); err != nil {
 		return "error", fmt.Errorf("persist: %w", err)
 	}
+	// Invalidate cached COSY session so subsequent requests use the new
+	// access token. Without this, the old jt- signature persists and all
+	// inference requests fail with 401 until process restart.
+	invalidateCosySession(sa.Account.UID)
 	return "refreshed", nil
 }
 

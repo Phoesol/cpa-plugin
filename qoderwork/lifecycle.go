@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -316,6 +317,18 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 
 	region := "cn"
 	if region == "cn" && disabled {
+		// Don't re-enable accounts marked session-dead by keepalive.
+		// The credits snapshot may still look healthy, but the session
+		// was revoked server-side — re-enabling would cause 401 storms.
+		if phys != nil {
+			var pjson struct {
+				Note string `json:"note"`
+			}
+			if json.Unmarshal(phys.JSON, &pjson) == nil && pjson.Note != "" &&
+				(strings.Contains(pjson.Note, "SESSION-DEAD") || strings.Contains(pjson.Note, "TOKEN_EXPIRE")) {
+				return lifecycleNone, nil
+			}
+		}
 		if shouldReenableCN(true, cr) {
 			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
 				return lifecycleReenable, err
