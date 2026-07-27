@@ -406,40 +406,6 @@ var modelAliasCache struct {
 // config → env → docker secret files (see resolveUsageReport).
 // usage.Detail is still used as a pure token-counter struct.
 
-func hostAuthListFiles() ([]pluginapi.HostAuthFileEntry, error) {
-	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
-	if err != nil {
-		return nil, err
-	}
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return nil, fmt.Errorf("host.auth.list failed")
-	}
-	var resp rpcHostAuthListResponse
-	if err := json.Unmarshal(env.Result, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Files, nil
-}
-
-// hostAuthGetByIndex fetches the raw JSON for one auth index.
-func hostAuthGetByIndex(authIndex string) ([]byte, error) {
-	body, _ := json.Marshal(map[string]string{"auth_index": authIndex})
-	raw, err := hostCall(pluginabi.MethodHostAuthGet, body)
-	if err != nil {
-		return nil, err
-	}
-	var env envelope
-	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
-		return nil, fmt.Errorf("host.auth.get failed")
-	}
-	var resp rpcHostAuthGetResponse
-	if err := json.Unmarshal(env.Result, &resp); err != nil {
-		return nil, err
-	}
-	return resp.JSON, nil
-}
-
 // storedAuth is the on-disk shape of a workbuddy credential.
 type storedAuth struct {
 	Auth    storedTokens  `json:"auth"`

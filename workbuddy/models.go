@@ -47,36 +47,6 @@ func storeDynamicModels(models []pluginapi.ModelInfo) {
 	dynamicModelsCache.Unlock()
 }
 
-func fetchDynamicModels() []pluginapi.ModelInfo {
-	if models, ok := cachedDynamicModels(); ok {
-		return models
-	}
-	models := wbModels()
-	files, err := hostAuthListFiles()
-	if err != nil || len(files) == 0 {
-		return models
-	}
-	for _, f := range files {
-		if !strings.Contains(strings.ToLower(f.Name), "workbuddy") && !strings.Contains(strings.ToLower(f.Name), "codebuddy") && !strings.EqualFold(f.Provider, "workbuddy") {
-			continue
-		}
-		raw, err := hostAuthGetByIndex(f.AuthIndex)
-		if err != nil {
-			continue
-		}
-		accessToken, ok := extractAccessToken(raw)
-		if !ok {
-			continue
-		}
-		dyn, err := callModelsAPI(accessToken)
-		if err == nil && len(dyn) > 0 {
-			storeDynamicModels(dyn)
-			return dyn
-		}
-	}
-	return models
-}
-
 func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 	if models, ok := cachedDynamicModels(); ok {
 		return models
@@ -88,13 +58,13 @@ func fetchDynamicModelsFromStorage(storageJSON []byte) []pluginapi.ModelInfo {
 		}
 	}
 	if accessToken == "" {
-		return fetchDynamicModels()
+		return wbModels()
 	}
 	if dyn, err := callModelsAPI(accessToken); err == nil && len(dyn) > 0 {
 		storeDynamicModels(dyn)
 		return dyn
 	}
-	return fetchDynamicModels()
+	return wbModels()
 }
 
 // fetchDynamicModels calls the WorkBuddy API to get the latest model list.
@@ -419,7 +389,7 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	cacheModelAliases(req.Host)
-	models := fetchDynamicModels()
+	models := wbModels()
 	models = filterExcludedModels(models, req.Host)
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
