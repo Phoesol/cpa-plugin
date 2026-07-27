@@ -383,7 +383,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthDataForRefresh(sa),
+			Auth:   toAuthData(sa),
 		})
 	}
 
@@ -403,7 +403,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
-			Auth:   toAuthDataForRefresh(sa),
+			Auth:   toAuthData(sa),
 		})
 	}
 
@@ -417,7 +417,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 					loginStates.Delete(state)
 					return okEnvelope(pluginapi.AuthLoginPollResponse{
 						Status: pluginapi.AuthLoginStatusSuccess,
-						Auth:   toAuthDataForRefresh(sa),
+						Auth:   toAuthData(sa),
 					})
 				}
 			}
