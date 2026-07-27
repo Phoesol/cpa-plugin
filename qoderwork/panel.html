@@ -340,11 +340,14 @@ function card(a){
   const selected=!!a.selected;
   const regionBadge=`<span class="badge cn">CN</span>`;
   // CN: 签到 button + 领取Pro button
+  // active=false means the upstream check-in activity is not enabled for
+  // this account (e.g. Community plan). Show disabled button with '?'.
   let actionHTML;
   const checked=ci.today_checked_in;
-  const btnClass=checked?"done":"sec";
-  const btnText=checked?"已签到":"签到";
-  const btnDisabled=checked?" disabled=\"disabled\"":"";
+  const ciActive=ci.active!==false; // absent=true (default active)
+  const btnClass=checked?"done":(ciActive?"sec":"done");
+  const btnText=checked?"已签到":(ciActive?"签到":"?");
+  const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
   actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`+
     `<button class="sec" data-action="claim-pro" data-auth-index="${esc(a.auth_index)}" title="领取Pro升级包">领取Pro</button>`;
   const selectBtn=selected
