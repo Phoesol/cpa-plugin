@@ -346,7 +346,7 @@ function card(a){
   const checked=ci.today_checked_in;
   const ciActive=ci.active!==false; // absent=true (default active)
   const btnClass=checked?"done":(ciActive?"sec":"done");
-  const btnText=checked?"已签到":(ciActive?"签到":"?");
+  const btnText=checked?"已签到":(ciActive?"签到":"不可签");
   const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
   actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`+
     `<button class="sec" data-action="claim-pro" data-auth-index="${esc(a.auth_index)}" title="领取Pro升级包">领取Pro</button>`;
