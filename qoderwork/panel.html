@@ -50,7 +50,7 @@ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bot
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:80px}
 .card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
 .card{padding:16px}
 .card.selected{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc-ring)}
@@ -692,7 +692,8 @@ async function checkin(idx, btn){
       busy(btn,false);
     }
     // Await reload so card matches server; cache was cleared on backend for this account
-    await load(false);
+    // Use force=true so credits are re-fetched from upstream (not stale cache).
+    await load(true);
   }catch(e){
     toast("签到请求失败","err",e.message);
     busy(btn,false);
@@ -706,7 +707,7 @@ async function claimPro(idx, btn){
     if(d.error){toast(name+"：领取失败","err",d.error);busy(btn,false);return}
     if(d.success){toast(name+"：领取成功","ok","Pro 升级包已领取"+(d.credits?(" · 积分 "+(d.credits.total_remain||0)):""))}
     else{toast(name+"："+(d.message||"不可领取"),"warn")}
-    await load(false);
+    await load(true);
   }catch(e){
     toast("领取请求失败","err",e.message);
     busy(btn,false);
