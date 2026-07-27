@@ -147,17 +147,20 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
 
-	// Plugin-layer auth + rate limit for mutating endpoints (v0.6.31).
-	// Only enforced when management_key is configured; otherwise host middleware
-	// is the sole guard (historical default).
+	// Plugin-layer auth + rate limit for mutating endpoints.
+	// The rate limiter ONLY guards against brute-force on the management key
+	// (repeated auth failures from one IP). Authenticated requests must never
+	// be throttled — the panel's normal operation (checkin + reload + claim)
+	// can easily exceed 5 POSTs in quick succession.
 	if req.Method == http.MethodPost || mutatingManagementPath(path) {
 		ip := managementClientIP(req)
-		if !allowManagementRequest(ip) {
-			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
-				"error": "rate limit exceeded, try again later",
-			}))
-		}
 		if status, msg := checkManagementAuth(req); status != 0 {
+			// Auth failed — consume a rate-limit token for this IP.
+			if !allowManagementRequest(ip) {
+				return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
+					"error": "rate limit exceeded, try again later",
+				}))
+			}
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
 	}
