@@ -396,10 +396,11 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	if !pending && tok != nil {
 		ui, _ := fetchUserInfo(tok.accessToken())
 		sa := buildStoredAuthFromDeviceToken(tok, ui)
-		// Best-effort: claim one-time activity packs (pro-upgrade +1800) right
-		// after login so the account starts with its full credit pool. Never
-		// blocks the login result — failures are logged in the note only.
-		claimActivityPacks(sa)
+		// Auth file must be persisted FIRST — the host writes it from the
+		// AuthLoginPollResponse we return below. Any post-login tasks (like
+		// claiming activity packs) must happen AFTER the file lands, not
+		// before. Pro-pack claiming is done via the panel's per-card button
+		// now, not automatically here.
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,

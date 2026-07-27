@@ -323,18 +323,6 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// claimActivityPacks claims one-time activity packs for a freshly logged-in
-// account (pro-upgrade +1800). Best-effort: checks eligibility first, claims
-// only when eligible, and never fails the caller — login succeeds regardless
-// of the outcome here.
-func claimActivityPacks(sa *storedAuth) {
-	eligible, err := checkProUpgradeEligibility(sa)
-	if err != nil || !eligible {
-		return
-	}
-	_, _ = claimProUpgrade(sa) // ignore result — ALREADY_CLAIMED is fine
-}
-
 // checkProUpgradeEligibility returns whether the account can still claim the
 // one-time Pro Upgrade pack (+1800).
 func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
@@ -403,4 +391,53 @@ func pruneCheckinLocks() {
 		}
 		return true
 	})
+}
+
+// handleClaimPro checks pro-upgrade eligibility for one account and claims
+// the one-time Pro pack (+ credits) when eligible. Surfaced as a panel
+// per-card button — NOT called automatically during login (login writes the
+// auth file first; this is a user-triggered post-login action).
+func handleClaimPro(req pluginapi.ManagementRequest) map[string]any {
+	var body struct {
+		AuthIndex string `json:"auth_index"`
+	}
+	_ = json.Unmarshal(req.Body, &body)
+	authIndex := strings.TrimSpace(body.AuthIndex)
+	if authIndex == "" {
+		return map[string]any{"error": "auth_index is required"}
+	}
+	sa, err := hostAuthGet(authIndex)
+	if err != nil {
+		return map[string]any{"error": "get auth: " + err.Error()}
+	}
+	out := map[string]any{
+		"auth_index": authIndex,
+		"nickname":   sa.Account.Nickname,
+	}
+	eligible, err := checkProUpgradeEligibility(sa)
+	if err != nil {
+		out["error"] = "eligibility: " + err.Error()
+		return out
+	}
+	if !eligible {
+		out["success"] = false
+		out["message"] = "不可领取（已领或活动未开放）"
+		return out
+	}
+	res, err := claimProUpgrade(sa)
+	if err != nil {
+		out["error"] = "claim: " + err.Error()
+		return out
+	}
+	for k, v := range res {
+		out[k] = v
+	}
+	if _, ok := out["success"]; !ok {
+		out["success"] = true
+	}
+	// Refresh credits snapshot so panel shows updated balance immediately.
+	if cr, crErr := fetchUserResource(sa); crErr == nil && cr != nil {
+		out["credits"] = cr
+	}
+	return out
 }
