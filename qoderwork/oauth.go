@@ -460,6 +460,11 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 		}
 		nickname = ui.Name
 	}
+	// When ui is nil (fast PollLogin path), derive a readable nickname from
+	// the uid so the panel doesn't fall back to the raw filename label.
+	if nickname == "" {
+		nickname = "u" + uid[len(uid)-8:]
+	}
 	return &storedAuth{
 		Auth: storedTokens{
 			AccessToken:   tok.accessToken(),
