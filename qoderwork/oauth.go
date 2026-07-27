@@ -394,13 +394,12 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("device authorization poll: %w", err)
 	}
 	if !pending && tok != nil {
-		ui, _ := fetchUserInfo(tok.accessToken())
-		sa := buildStoredAuthFromDeviceToken(tok, ui)
-		// Auth file must be persisted FIRST — the host writes it from the
-		// AuthLoginPollResponse we return below. Any post-login tasks (like
-		// claiming activity packs) must happen AFTER the file lands, not
-		// before. Pro-pack claiming is done via the panel's per-card button
-		// now, not automatically here.
+		// Auth file must land IMMEDIATELY — no upstream calls before return.
+		// The host writes the auth file from AuthLoginPollResponse, so any
+		// blocking work (fetchUserInfo, hostAuthList) delays persistence.
+		// UserID is already in the poll response; nickname is fetched lazily
+		// by the panel on first load. PAT coalescing happens on keepalive.
+		sa := buildStoredAuthFromDeviceToken(tok, nil)
 		loginStates.Delete(state)
 		return okEnvelope(pluginapi.AuthLoginPollResponse{
 			Status: pluginapi.AuthLoginStatusSuccess,
@@ -447,10 +446,10 @@ func deviceExpiryUnix(tok *deviceTokenResponse) int64 {
 }
 
 // buildStoredAuthFromDeviceToken maps a device-token grant onto storedAuth.
-// AccessToken=dt-, RefreshToken=drt-. When re-logging an account that already
-// has an auth file (e.g. a PAT-imported one), the existing PAT is PRESERVED
-// in PersonalToken — the two credential families coexist: OAuth tokens serve
-// traffic, the PAT remains as long-lived fallback for account recovery.
+// AccessToken=dt-, RefreshToken=drt-. When ui is nil (fast path during
+// PollLogin), UserID comes from the poll response and nickname is empty —
+// the panel fills it lazily on first load. preservePAT=false skips the
+// hostAuthList scan to avoid blocking auth-file persistence.
 func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoResponse) *storedAuth {
 	expiresAt := deviceExpiryUnix(tok)
 	uid := tok.UserID
@@ -465,7 +464,7 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 		Auth: storedTokens{
 			AccessToken:   tok.accessToken(),
 			RefreshToken:  tok.RefreshToken,
-			PersonalToken: existingPATForUID(uid), // coexist: keep prior PAT if any
+			PersonalToken: "", // PAT coalescing happens on keepalive, not here
 			ExpiresAt:     expiresAt,
 			Domain:        "qoder.com.cn",
 		},
@@ -475,7 +474,11 @@ func buildStoredAuthFromDeviceToken(tok *deviceTokenResponse, ui *userInfoRespon
 
 // existingPATForUID looks up an existing qoderwork auth file for the same
 // uid and returns its stored PAT (empty when none). Lets OAuth re-login
-// preserve the previously imported PAT instead of wiping it.
+// preserve a previously imported PAT instead of wiping it.
+//
+// NOTE: This calls hostAuthList which is a blocking host RPC. It must NOT
+// be called during PollLogin (delays auth file persistence). It is safe to
+// call during keepalive/refresh which happens long after the file is written.
 func existingPATForUID(uid string) string {
 	if uid == "" {
 		return ""
