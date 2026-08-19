@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,8 +64,10 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 		if legacyPath != "" {
 			dir := filepath.Dir(legacyPath)
 			legacyFile := filepath.Join(dir, authFileName)
-			// A-35: use deleteAuthFileInDir for absolute path + directory confinement.
-			_ = deleteAuthFileInDir(legacyFile, dir)
+			legacyRaw, readErr := os.ReadFile(legacyFile)
+			if readErr == nil && shouldDeleteLegacyForUID(legacyRaw, sa.Account.UID) {
+				_ = deleteAuthFileInDir(legacyFile, dir)
+			}
 		}
 	}
 	return map[string]any{

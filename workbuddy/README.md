@@ -2,7 +2,7 @@
 
 A [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) plugin that
 provides **Tencent CodeBuddy** (`copilot.tencent.com` CN and `workbuddy.ai`
-Global) as a native OAuth provider: dynamic model discovery, streaming executor,
+Global) as a native OAuth provider: a fixed model catalog, streaming executor,
 credit-aware scheduling, daily check-in automation, and a built-in management
 dashboard.
 
@@ -12,9 +12,9 @@ dashboard.
 
 - **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
   host's auth store. CN and Global realms share one plugin, one config block.
-- **Dynamic models** — live model list from the upstream models API with a
-  5-minute cache and a static fallback. Host-side `oauth-model-alias` /
-  `oauth-excluded-models` config applies unchanged.
+- **Fixed model catalog** — the plugin always returns its versioned built-in
+  model list; host-side `oauth-model-alias` / `oauth-excluded-models` config
+  still applies.
 - **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
   via `host.stream.emit`) and non-streaming (SSE folded into a single
   completion). `tool_choice` normalization, Claude Code template sanitization,

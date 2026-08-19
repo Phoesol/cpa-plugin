@@ -33,6 +33,20 @@ func ensureScheduler() {
 // during its own runtime teardown, where touching Go sync primitives from the
 // plugin's c-shared runtime caused SIGSEGV on every restart.
 
+func scheduledInCurrentHour(now time.Time, hours []int) bool {
+	for _, h := range hours {
+		start := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+		if !now.Before(start) && now.Before(start.Add(time.Hour)) {
+			return true
+		}
+	}
+	return false
+}
+
+func scheduledActionsFor(now time.Time) (runCheckin, runKeepalive bool) {
+	return scheduledInCurrentHour(now, checkinHours), scheduledInCurrentHour(now, keepaliveHours)
+}
+
 func nextCheckinTime(now time.Time) time.Time {
 	var earliest time.Time
 	// Consider both checkin and keepalive schedules so the timer wakes up for
@@ -61,11 +75,11 @@ func schedulerLoop(stop chan struct{}) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			runAutoCheckin()
-			// Fire keepalive if the current tick falls within its scheduled
-			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
-			// the previous checkin tick was 21:00).
-			if shouldRunKeepaliveNow(time.Now()) {
+			runCheckin, runKeepalive := scheduledActionsFor(time.Now())
+			if runCheckin {
+				runAutoCheckin()
+			}
+			if runKeepalive {
 				runTokenKeepalive()
 			}
 		}
@@ -132,45 +146,47 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 			}
 			return
 		}
-		// CN: daily check-in when enabled.
-		ci, err := fetchCheckinStatus(sa)
-		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-			if _, callErr := performCheckinCall(sa); callErr == nil {
-				// Refresh once after a successful checkin call so cache reflects
-				// the post-call state. If the status call fails keep the pre-call
-				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-				// with a second fetch that could race with concurrent readers).
-				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-					ci = ci2
-				}
-				// P1-5: checkin grants new credits — refresh the credits cache
-				// immediately so the panel shows the updated balance without
-				// waiting for the async reconcile pass.
-				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
-					if v, ok := accountCache.Load(f.ID); ok {
-						if prev, ok2 := v.(*accountCacheEntry); ok2 {
-							fresh := *prev
-							fresh.credits = cr2
-							fresh.fetched = time.Now()
-							accountCache.Store(f.ID, &fresh)
+		withCheckinLock(f.AuthIndex, func() {
+			// CN: daily check-in when enabled.
+			ci, err := fetchCheckinStatus(sa)
+			if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
+				if _, callErr := performCheckinCall(sa); callErr == nil {
+					// Refresh once after a successful checkin call so cache reflects
+					// the post-call state. If the status call fails keep the pre-call
+					// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
+					// with a second fetch that could race with concurrent readers).
+					if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+						ci = ci2
+					}
+					// P1-5: checkin grants new credits — refresh the credits cache
+					// immediately so the panel shows the updated balance without
+					// waiting for the async reconcile pass.
+					if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
+						if v, ok := accountCache.Load(f.ID); ok {
+							if prev, ok2 := v.(*accountCacheEntry); ok2 {
+								fresh := *prev
+								fresh.credits = cr2
+								fresh.fetched = time.Now()
+								accountCache.Store(f.ID, &fresh)
+							}
 						}
 					}
 				}
 			}
-		}
-		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-		if ci != nil {
-			var prev *accountCacheEntry
-			if v, ok := accountCache.Load(f.ID); ok {
-				prev, _ = v.(*accountCacheEntry)
+			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
+			if ci != nil {
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(f.ID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(f.ID, entry)
 			}
-			entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-			if prev != nil {
-				entry.credits = prev.credits
-				entry.plan = prev.plan
-			}
-			accountCache.Store(f.ID, entry)
-		}
+		})
 		if lifecycleEnabled() {
 			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 		}
@@ -359,6 +375,13 @@ func mergeCheckinCache(authID string, ci *checkinSummary) {
 		entry.plan = prev.plan
 	}
 	accountCache.Store(authID, entry)
+}
+
+func withCheckinLock(authIndex string, fn func()) {
+	mu := checkinLockFor(authIndex)
+	mu.Lock()
+	defer mu.Unlock()
+	fn()
 }
 
 func checkinLockFor(authIndex string) *sync.Mutex {

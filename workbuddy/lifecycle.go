@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -193,8 +194,7 @@ func deleteAuth(authIndex, authID string, sa *storedAuth) error {
 	if sa != nil && strings.TrimSpace(sa.Account.UID) != "" {
 		if dir := filepath.Dir(path); dir != "" {
 			legacy := filepath.Join(dir, authFileName)
-			// A-36: same path safety as primary deleteAuthFileInDir.
-			if isLegacyWorkbuddyAuthName(filepath.Base(legacy)) {
+			if legacyRaw, readErr := os.ReadFile(legacy); readErr == nil && shouldDeleteLegacyForUID(legacyRaw, sa.Account.UID) {
 				_ = deleteAuthFileInDir(legacy, dir)
 			}
 		}

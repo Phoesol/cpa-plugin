@@ -261,39 +261,54 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	now := time.Now()
-	// Status 0=active, 3=exhausted-but-still-listed. PageSize 100 covers the
-	// multi-pack free accounts we see in production; paginate if TotalCount
-	// ever exceeds it.
+	// Status 0=active, 3=exhausted-but-still-listed.
 	const pageSize = 100
-	body := map[string]any{
-		"PageNumber":               1,
+	baseBody := map[string]any{
 		"PageSize":                 pageSize,
 		"ProductCode":              "p_tcaca",
 		"Status":                   []int{0, 3},
 		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
 		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	}
-	data, err := billingCall(sa, "/v2/billing/meter/get-user-resource", body)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Response struct {
-			Data struct {
-				TotalCount  int64             `json:"TotalCount"`
-				TotalDosage int64             `json:"TotalDosage"` // package capacity pool, NOT consumption
-				Accounts    []resourcePackage `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
+	var all []resourcePackage
+	var totalCount int64
+	var totalDosage int64
+	for page := 1; ; page++ {
+		body := make(map[string]any, len(baseBody)+1)
+		for k, v := range baseBody {
+			body[k] = v
+		}
+		body["PageNumber"] = page
+		data, err := billingCall(sa, "/v2/billing/meter/get-user-resource", body)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Response struct {
+				Data struct {
+					TotalCount  int64             `json:"TotalCount"`
+					TotalDosage int64             `json:"TotalDosage"` // package capacity pool, NOT consumption
+					Accounts    []resourcePackage `json:"Accounts"`
+				} `json:"Data"`
+			} `json:"Response"`
+		}
+		if err := json.Unmarshal(data, &resp); err != nil {
+			return nil, err
+		}
+		if page == 1 {
+			totalCount = resp.Response.Data.TotalCount
+			totalDosage = resp.Response.Data.TotalDosage
+		}
+		all = append(all, resp.Response.Data.Accounts...)
+		if len(resp.Response.Data.Accounts) < pageSize || (totalCount > 0 && totalCount <= int64(len(all))) {
+			break
+		}
 	}
 	// Aggregate ALL packages (体验版 + 多个签到/裂变包 + 其它赠送包).
 	// Remain = currently spendable. Used = consumed this cycle. Size = capacity.
 	// Daily check-in adds packages → Size and Remain go UP; that is grant, not usage.
 	sum := &creditsSummary{}
-	for _, a := range resp.Response.Data.Accounts {
+	for _, a := range all {
 		remain, used, size := packageRemainUsed(a)
 		sum.TotalRemain += remain
 		sum.TotalUsed += used
@@ -321,8 +336,8 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	}
 	// Upstream TotalDosage is the capacity pool (~sum of package sizes), not spend.
 	// Use it only as a size floor when pack sizes look incomplete.
-	if dosage := resp.Response.Data.TotalDosage; dosage > sum.TotalSize {
-		sum.TotalSize = dosage
+	if totalDosage > sum.TotalSize {
+		sum.TotalSize = totalDosage
 		derived := sum.TotalSize - sum.TotalRemain
 		if derived < 0 {
 			derived = 0
@@ -331,7 +346,6 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 			sum.TotalUsed = derived
 		}
 	}
-	_ = resp.Response.Data.TotalCount
 	return sum, nil
 }
 

@@ -8,7 +8,7 @@ driven via the `pluginabi` RPC interface.
 
 | Capability | Implementation file | What it does |
 |---|---|---|
-| `ModelProvider` | `models.go` | Static + dynamic model list, alias reverse-resolution, `oauth-excluded-models` filter |
+| `ModelProvider` | `models.go` | Fixed model list, alias reverse-resolution, `oauth-excluded-models` filter |
 | `AuthProvider` | `oauth.go`, `auth_parse.go` (in `authfile.go` / `main.go`) | OAuth login flow (CN + Global), token refresh, auth file parse |
 | `Executor` | `executor.go`, `stream.go`, `payload.go` | Chat completions, streaming SSE pump, request body rewriting |
 | `Scheduler` | `scheduler.go`, `active_auth.go` | Optional panel-selected account routing (`scheduler_mode: credits`) |
@@ -30,8 +30,8 @@ stream.go         streamEmit/Close + pumpUpstreamStream + collectUpstreamStream 
 payload.go        prepareUpstreamBody + InPlace mutators (forceStream/normalizeTools/
                   rewriteSystem/ensureSystemMessage/rewriteModel) + legacy wrappers
 
-models.go         callModelsAPI + fetchDynamicModels + cacheModelAliases +
-                  resolveUpstreamModel + parseModelAliasAttribute + filterExcludedModels
+models.go         wbModels + cacheModelAliases + resolveUpstreamModel +
+                  parseModelAliasAttribute + filterExcludedModels
 
 oauth.go          handleStartLogin/PollLogin/RefreshAuth + newLoginClient + doJSON
 auth_parse.go     (in authfile.go / main.go) handleParseAuth + parseStored + toAuthData

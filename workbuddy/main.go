@@ -87,7 +87,7 @@ const (
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
-	// CN endpoint aliases (login / chat / models). upstreamBaseCN is the only
+	// CN endpoint aliases (login / chat). upstreamBaseCN is the only
 	// CN base; Global has its own upstreamBaseGlobal. No "upstreamBase" legacy
 	// alias — removed in v0.6.31 dead-code sweep.
 	endpointAuthState    = upstreamBaseCN + "/v2/plugin/auth/state?platform=CLI"
@@ -95,7 +95,6 @@ const (
 	endpointAuthToken    = upstreamBaseCN + "/v2/plugin/auth/token?state="
 	endpointTokenRefresh = upstreamBaseCN + "/v2/plugin/auth/token/refresh"
 	endpointChat         = upstreamBaseCN + "/v2/chat/completions"
-	endpointModels       = upstreamBaseCN + "/console/enterprises/personal/models"
 
 	loginTTL = 5 * time.Minute
 )
@@ -259,9 +258,9 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodExecutorExecuteStream:
 		return handleExecStream(request)
 	case pluginabi.MethodExecutorCountTokens:
-		// Upstream CodeBuddy has no dedicated count_tokens API. Return
-		// unhandled-style zero estimate so clients fall back / skip.
-		return okEnvelope(pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":0}`)})
+		return errorEnvelope("unsupported_method", "WorkBuddy does not expose a count_tokens API"), nil
+	case pluginabi.MethodExecutorHTTPRequest:
+		return handleExecHTTPRequest(request)
 	case pluginabi.MethodManagementRegister:
 		// Cache host-injected BasePath so handleManagement doesn't hardcode
 		// /v0/management (v0.6.31: tolerate future host path changes).
@@ -269,6 +268,9 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err := json.Unmarshal(request, &regReq); err == nil {
 			if regReq.BasePath != "" {
 				setManagementBasePath(regReq.BasePath)
+			}
+			if regReq.ResourceBasePath != "" {
+				setResourceBasePath(regReq.ResourceBasePath)
 			}
 		}
 		return okEnvelope(managementRegistration())
@@ -327,7 +329,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.8.2"
+var version = "0.8.5"
 
 func wbRegistration() registration {
 	return registration{
@@ -342,8 +344,8 @@ func wbRegistration() registration {
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN / delete Global when credits exhausted; re-enable CN after check-in restores credits (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
-				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
+				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for mutating management endpoints; also env WB_MANAGEMENT_KEY."},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick the panel-selected account, with non-exhausted fallback). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 			},
@@ -361,18 +363,6 @@ func wbRegistration() registration {
 			UsagePlugin:           true,
 		},
 	}
-}
-
-// dynamicModelsCacheTTL bounds how long a fetched model list is reused.
-// model.static / model.for_auth are re-invoked by CPA on every config reload
-// and on each models query; without caching, every reload fans out to one
-// upstream call per account.
-const dynamicModelsCacheTTL = 5 * time.Minute
-
-var dynamicModelsCache struct {
-	sync.RWMutex
-	models  []pluginapi.ModelInfo
-	fetched time.Time
 }
 
 //
@@ -528,10 +518,6 @@ func endpointChatFor(sa *storedAuth) string {
 
 func endpointTokenRefreshFor(sa *storedAuth) string {
 	return upstreamBaseFor(sa) + "/v2/plugin/auth/token/refresh"
-}
-
-func endpointModelsFor(sa *storedAuth) string {
-	return upstreamBaseFor(sa) + "/console/enterprises/personal/models"
 }
 
 // backendHeaders applies auth-derived headers to a chat completion request.

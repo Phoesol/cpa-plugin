@@ -103,16 +103,21 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	collector := &sseUsageCollector{}
 	scanner := bufio.NewScanner(newHostStreamReader(stream))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	validEvents := 0
 	for scanner.Scan() {
 		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
+		if content == "" {
 			continue
+		}
+		if content == "[DONE]" {
+			break
 		}
 		collector.feed(content)
 		cleaned := cleanChunkJSON(content)
-		if cleaned == "" {
+		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
+		validEvents++
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
@@ -127,6 +132,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	if err := scanner.Err(); err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, err.Error())
 		streamEmitError(streamID, fmt.Sprintf("upstream stream read error: %v", err))
+		return
+	}
+	if validEvents == 0 {
+		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, "empty upstream stream")
+		streamEmitError(streamID, "empty upstream stream")
 		return
 	}
 	publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), false, 0, "")
@@ -193,18 +203,23 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
+	validEvents := 0
 	for scanner.Scan() {
 		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
+		if content == "" {
 			continue
+		}
+		if content == "[DONE]" {
+			break
 		}
 		if collector != nil {
 			collector.feed(content)
 		}
 		cleaned := cleanChunkJSON(content)
-		if cleaned == "" {
+		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
+		validEvents++
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
@@ -212,6 +227,9 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 	}
 	if err := scanner.Err(); err != nil {
 		return chunks, fmt.Errorf("upstream stream read error: %w", err)
+	}
+	if validEvents == 0 {
+		return chunks, fmt.Errorf("upstream stream contained no valid data events")
 	}
 	return chunks, nil
 }
@@ -288,13 +306,17 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	toolCalls := map[int]map[string]any{}
 	var toolOrder []int
 	var scanErr error
+	sawChoice := false
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		data := stripDataPrefix(scanner.Text())
-		if data == "" || data == "[DONE]" {
+		if data == "" {
 			continue
+		}
+		if data == "[DONE]" {
+			break
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -313,6 +335,9 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 			usage = v
 		}
 		choices, _ := chunk["choices"].([]any)
+		if len(choices) > 0 {
+			sawChoice = true
+		}
 		for _, c := range choices {
 			choice, _ := c.(map[string]any)
 			if delta, ok := choice["delta"].(map[string]any); ok {
@@ -359,6 +384,9 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	// of assembling a partial completion nobody can safely consume.
 	if scanErr != nil {
 		return nil, fmt.Errorf("upstream stream read error: %w", scanErr)
+	}
+	if !sawChoice {
+		return nil, fmt.Errorf("upstream stream contained no valid completion events")
 	}
 
 	message := map[string]any{"role": firstNonEmpty(role, "assistant"), "content": content}

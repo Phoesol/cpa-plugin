@@ -110,7 +110,9 @@ func hostBridgeAvailable() bool {
 // Fallback: when the host bridge is unavailable (unit tests, host older than
 // v7.2.x without the http bridge), we route through sharedHTTPClient directly.
 // This keeps the plugin functional in dev/test contexts while preferring the
-// compliant path in production.
+// compliant path in production. Once a bridge call is attempted, failures are
+// returned instead of replaying the request directly; many upstream calls are
+// POSTs and may already have executed.
 func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("nil request")
@@ -142,13 +144,11 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	}
 	raw, err := hostCall(pluginabi.MethodHostHTTPDo, mustJSON(wire))
 	if err != nil {
-		// Bridge exists but the call failed — fall back to direct so a transient
-		// host RPC error doesn't take down the executor.
-		return hostHTTPDoDirect(req, bodyBytes)
+		return nil, fmt.Errorf("host.http.do: %w", err)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDo)
 	if err != nil {
-		return hostHTTPDoDirect(req, bodyBytes)
+		return nil, err
 	}
 	var resp struct {
 		StatusCode int                 `json:"status_code"`
@@ -235,11 +235,11 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 	}
 	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, mustJSON(wire))
 	if err != nil {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		return nil, 0, nil, fmt.Errorf("host.http.do_stream: %w", err)
 	}
 	result, err := hostBridgeUnwrap(raw, pluginabi.MethodHostHTTPDoStream)
 	if err != nil {
-		return hostHTTPDoStreamDirect(req, bodyBytes)
+		return nil, 0, nil, err
 	}
 	var resp rpcHostHTTPStreamResponseWire
 	if err := json.Unmarshal(result, &resp); err != nil {

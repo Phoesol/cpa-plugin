@@ -2,7 +2,7 @@
 
 [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 **腾讯 CodeBuddy**
 （国内版 `copilot.tencent.com` + 国际版 `workbuddy.ai`）原生 OAuth 提供商插件：
-动态模型发现、流式执行器、积分感知调度、每日自动签到、内置管理面板。
+固定模型目录、流式执行器、积分感知调度、每日自动签到、内置管理面板。
 
 [English → README.md](README.md)
 
@@ -10,8 +10,8 @@
 
 - **OAuth 登录** — 通过宿主 auth store 管理多账号 `workbuddy-<uid>.json`，
   CN 和 Global 共用一个插件、一份配置。
-- **动态模型** — 上游 models API 实时拉取 + 5 分钟缓存 + 静态 fallback。
-  宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置直接生效。
+- **固定模型目录** — 插件始终返回内置版本化模型列表；宿主侧
+  `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。
 - **执行器** — OpenAI 兼容 chat completions，流式（真 SSE，走 `host.stream.emit`）
   和非流式（SSE 折叠成单个 completion）都支持。内置 `tool_choice` 归一、
   Claude Code 模板清洗、按区域注入 system message。

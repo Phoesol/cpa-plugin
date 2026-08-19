@@ -121,6 +121,8 @@ type managementRegistrationResponse struct {
 var (
 	managementBasePathCache   = "/v0/management"
 	managementBasePathCacheMu sync.RWMutex
+	resourceBasePathCache     = "/v0/resource/plugins/" + providerName
+	resourceBasePathCacheMu   sync.RWMutex
 )
 
 func loadedManagementBasePath() string {
@@ -137,6 +139,22 @@ func setManagementBasePath(p string) {
 	managementBasePathCacheMu.Lock()
 	managementBasePathCache = p
 	managementBasePathCacheMu.Unlock()
+}
+
+func loadedResourceBasePath() string {
+	resourceBasePathCacheMu.RLock()
+	defer resourceBasePathCacheMu.RUnlock()
+	return resourceBasePathCache
+}
+
+func setResourceBasePath(p string) {
+	p = strings.TrimRight(strings.TrimSpace(p), "/")
+	if p == "" {
+		return
+	}
+	resourceBasePathCacheMu.Lock()
+	resourceBasePathCache = p
+	resourceBasePathCacheMu.Unlock()
 }
 
 func managementRegistration() managementRegistrationResponse {
@@ -168,22 +186,25 @@ func handleManagement(raw []byte) ([]byte, error) {
 	path := strings.TrimRight(req.Path, "/")
 
 	// Browser UI resource routes (unauthenticated).
-	resPrefix := "/v0/resource/plugins/" + providerName
+	resPrefix := loadedResourceBasePath()
 	if req.Method == http.MethodGet && strings.HasPrefix(path, resPrefix) {
 		sub := strings.TrimPrefix(path, resPrefix)
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
 
-	// Plugin-layer auth + rate limit for mutating endpoints (v0.6.31).
-	// Only enforced when management_key is configured; otherwise host middleware
-	// is the sole guard (historical default).
-	if req.Method == http.MethodPost || mutatingManagementPath(path) {
+	// Plugin-layer auth applies to every management API route when a key is
+	// configured. Static panel resources return above so the login UI remains
+	// reachable; the panel sends the Bearer key on each JSON request.
+	mutating := req.Method == http.MethodPost || mutatingManagementPath(path)
+	if mutating {
 		ip := managementClientIP(req)
 		if !allowManagementRequest(ip) {
 			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
 				"error": "rate limit exceeded, try again later",
 			}))
 		}
+	}
+	if loadedManagementKey() != "" || mutating {
 		if status, msg := checkManagementAuth(req); status != 0 {
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
@@ -220,10 +241,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 //
 // When management_key is configured (config_yaml or WB_MANAGEMENT_KEY env), all
-// mutating endpoints under /v0/management/plugins/workbuddy/* require a matching
-// Bearer token. Read-only GET endpoints (accounts/credits/panel) pass through so
-// the panel can render before the user has pasted a key — the panel itself
-// supplies the key on every call via Authorization header.
+// management API routes under /v0/management/plugins/workbuddy/* require a
+// matching Bearer token. Static panel resources stay public so the UI can load
+// and prompt for the key; the panel itself supplies the key on every API call.
 //
 // A per-IP token-bucket rate limiter guards against brute-force when the key
 // check fails repeatedly.

@@ -102,6 +102,19 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 // refreshOneAuth refreshes the access token for a single workbuddy auth and
 // persists the result. Returns a short status string for logging/tests.
 func refreshOneAuth(authIndex, authID string) (string, error) {
+	var status string
+	var resultErr error
+	withRefreshLock(authIndex, func() {
+		status, resultErr = refreshOneAuthUnlocked(authIndex, authID)
+	})
+	return status, resultErr
+}
+
+func withRefreshLock(authIndex string, fn func()) {
+	withCheckinLock(authIndex, fn)
+}
+
+func refreshOneAuthUnlocked(authIndex, authID string) (string, error) {
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		return "error", fmt.Errorf("get auth: %w", err)
@@ -112,8 +125,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 
 	data, raw, status, err := refreshCall(sa)
 	if err != nil {
-		msg := string(raw)
-		if status == 401 && isSessionDeadError(msg) {
+		if isSessionDeadError(string(raw)) || isSessionDeadError(err.Error()) {
 			// Upstream killed the offline session: refresh token is dead and
 			// every API call for this account will 401. Flag disabled so the
 			// scheduler stops routing traffic to it until manual re-login.
@@ -136,10 +148,7 @@ func refreshOneAuth(authIndex, authID string) (string, error) {
 	if tok.Domain != "" {
 		sa.Auth.Domain = tok.Domain
 	}
-	sa.Auth.ExpiresAt = preserveExpiry(
-		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Second).Unix(),
-		sa.Auth.ExpiresAt,
-	)
+	sa.Auth.ExpiresAt = expiryFromExpiresIn(tok.ExpiresIn, sa.Auth.ExpiresAt)
 	if err := persistAuthTokens(authIndex, sa); err != nil {
 		return "error", fmt.Errorf("persist: %w", err)
 	}
@@ -158,7 +167,7 @@ func persistAuthTokens(authIndex string, sa *storedAuth) error {
 	if name == "" {
 		name = authFileNameFor(sa)
 	}
-	raw, err := json.Marshal(sa)
+	raw, err := buildRefreshedAuthJSON(phys.JSON, sa)
 	if err != nil {
 		return err
 	}
@@ -289,14 +298,7 @@ func nextKeepaliveTime(now time.Time) time.Time {
 // one hour after any scheduled keepalive hour today. Used by schedulerLoop
 // to fire keepalive on the same tick as checkin when the schedules coincide.
 func shouldRunKeepaliveNow(now time.Time) bool {
-	for _, h := range keepaliveHours {
-		t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
-		// Within [t, t+1h) window.
-		if !now.Before(t) && now.Before(t.Add(time.Hour)) {
-			return true
-		}
-	}
-	return false
+	return scheduledInCurrentHour(now, keepaliveHours)
 }
 
 // handleKeepaliveNow triggers a manual refresh (all accounts, or one when the

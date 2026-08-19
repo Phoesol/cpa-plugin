@@ -138,22 +138,19 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		commonHeaders(r)
 		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	}
-	if acctRaw, _, errAcct := doJSON(lc.client, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil); errAcct == nil {
-		_ = json.Unmarshal(acctRaw, &acct)
+	acctRaw, _, errAcct := doJSON(lc.client, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil)
+	if errAcct != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: account lookup failed after token success: %w", errAcct)
 	}
-
-	sa := &storedAuth{
-		Auth: storedTokens{
-			AccessToken:  tok.AccessToken,
-			RefreshToken: tok.RefreshToken,
-			ExpiresAt:    time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix(),
-			Domain:       tok.Domain,
-		},
-		Account: storedAccount{
-			UID:          acct.UID,
-			EnterpriseID: acct.EnterpriseID,
-			Nickname:     acct.Nickname,
-		},
+	if err := json.Unmarshal(acctRaw, &acct); err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: account lookup parse failed: %w", err)
+	}
+	sa, err := buildLoginStoredAuth(tok, acct)
+	if err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: %w", err)
 	}
 	loginStates.Delete(state)
 	return okEnvelope(pluginapi.AuthLoginPollResponse{
@@ -193,15 +190,41 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	if tok.Domain != "" {
 		sa.Auth.Domain = tok.Domain
 	}
-	sa.Auth.ExpiresAt = preserveExpiry(
-		time.Now().Add(time.Duration(tok.ExpiresIn)*time.Second).Unix(),
-		sa.Auth.ExpiresAt,
-	)
+	sa.Auth.ExpiresAt = expiryFromExpiresIn(tok.ExpiresIn, sa.Auth.ExpiresAt)
 	// No explicit host.auth.save here: the host's auth Manager persists the
 	// refreshed credential itself after Refresh returns (conductor.go
 	// refreshAuth → m.Update → persist). Writing from the plugin too would
 	// double-write the file.
 	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
+}
+
+func buildLoginStoredAuth(tok tokenData, acct accountData) (*storedAuth, error) {
+	if strings.TrimSpace(tok.AccessToken) == "" {
+		return nil, fmt.Errorf("token response missing accessToken")
+	}
+	if strings.TrimSpace(acct.UID) == "" {
+		return nil, fmt.Errorf("account lookup missing uid")
+	}
+	return &storedAuth{
+		Auth: storedTokens{
+			AccessToken:  tok.AccessToken,
+			RefreshToken: tok.RefreshToken,
+			ExpiresAt:    expiryFromExpiresIn(tok.ExpiresIn, 0),
+			Domain:       tok.Domain,
+		},
+		Account: storedAccount{
+			UID:          acct.UID,
+			EnterpriseID: acct.EnterpriseID,
+			Nickname:     acct.Nickname,
+		},
+	}, nil
+}
+
+func expiryFromExpiresIn(expiresIn, oldExpiry int64) int64 {
+	if expiresIn <= 0 {
+		return oldExpiry
+	}
+	return time.Now().Add(time.Duration(expiresIn) * time.Second).Unix()
 }
 
 // preserveExpiry reuses the previous token's expiresAt when the refresh
