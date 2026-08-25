@@ -17,15 +17,43 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// newLoginClient builds an isolated client with its own cookie jar so that the
-// browser login for one state can never leak into another.
-func newLoginClient() *http.Client {
-	jar, _ := cookiejar.New(nil)
-	return &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: sharedHTTPClient().Transport,
-		Jar:       jar,
+// newLoginClient builds an isolated client with its own cookie jar and binds it
+// to the routing snapshot active when the login starts.
+func newLoginClient() (*http.Client, error) {
+	state := currentProxyState()
+	if state.mode == proxyModeBlocked || state.mode == proxyModeExplicit && state.client == nil {
+		return nil, blockedProxyError()
 	}
+	transport := sharedHTTPClient().Transport
+	if state.mode == proxyModeExplicit {
+		transport = state.client.Transport
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Timeout:       30 * time.Second,
+		Transport:     transport,
+		Jar:           jar,
+		CheckRedirect: rejectHTTPRedirect,
+	}, nil
+}
+
+func loginClientForCurrentRouting(lc *loginCtx) (*http.Client, error) {
+	if lc == nil || lc.client == nil {
+		return nil, fmt.Errorf("login client unavailable")
+	}
+	routing := currentProxyState()
+	if routing.mode == proxyModeBlocked || routing.mode == proxyModeExplicit && routing.client == nil {
+		return nil, blockedProxyError()
+	}
+	client := *lc.client
+	client.CheckRedirect = rejectHTTPRedirect
+	if routing.mode == proxyModeExplicit {
+		client.Transport = routing.client.Transport
+	}
+	return &client, nil
 }
 
 // doJSON sends method to fullURL with the given headers, parses the {code,msg,data}
@@ -53,7 +81,7 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 		// Redirects: Go's client follows them for GET, but a 3xx that lands
 		// here (e.g. POST 307/308 not re-sent, or a new upstream gateway) would
 		// otherwise surface as a misleading JSON "parse failed".
-		return nil, resp.StatusCode, fmt.Errorf("http_error: upstream redirect %d (location: %s)", resp.StatusCode, resp.Header.Get("Location"))
+		return nil, resp.StatusCode, fmt.Errorf("http_error: upstream redirect %d", resp.StatusCode)
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -66,7 +94,10 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 }
 
 func handleStartLogin(raw []byte) ([]byte, error) {
-	client := newLoginClient()
+	client, err := newLoginClient()
+	if err != nil {
+		return nil, fmt.Errorf("auth state failed: %w", err)
+	}
 	data, _, err := doJSON(client, http.MethodPost, endpointAuthState, nil, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)
@@ -104,6 +135,11 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
 	}
+	pollClient, err := loginClientForCurrentRouting(lc)
+	if err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: %w", err)
+	}
 
 	// Single-shot poll per RPC: the host drives the polling cadence.
 	// auth/token is the authoritative login-status endpoint: the application
@@ -111,7 +147,7 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	// with the token bundle once complete. login/account sits behind the
 	// openresty gateway and is rejected (401) until login finishes, so probe
 	// token first and only fetch account once we hold a bearer.
-	tokRaw, status, errTok := doJSON(lc.client, http.MethodGet, endpointAuthToken+state, nil, nil)
+	tokRaw, status, errTok := doJSON(pollClient, http.MethodGet, endpointAuthToken+state, nil, nil)
 	if errTok != nil {
 		// Transport-level failures and 5xx are real errors, not "still waiting":
 		// surface them so the user sees a failure instead of polling until TTL.
@@ -132,13 +168,18 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 			Message: "waiting for login",
 		})
 	}
+	pollClient, err = loginClientForCurrentRouting(lc)
+	if err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: %w", err)
+	}
 
 	var acct accountData
 	acctHeaders := func(r *http.Request) {
 		commonHeaders(r)
 		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	}
-	acctRaw, _, errAcct := doJSON(lc.client, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil)
+	acctRaw, _, errAcct := doJSON(pollClient, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil)
 	if errAcct != nil {
 		loginStates.Delete(state)
 		return nil, fmt.Errorf("poll: account lookup failed after token success: %w", errAcct)

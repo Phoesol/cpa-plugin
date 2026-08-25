@@ -89,6 +89,12 @@ plugins:
     workbuddy:
       enabled: true
 
+      # WorkBuddy 插件发起的全部 HTTP 请求可使用独立代理。
+      # 支持 http、https、socks5、socks5h。
+      # 空值或未设置时继承现有 CPA 路由；配置无效或代理运行失败时
+      # fail closed，不会回退到 CPA 全局代理或直连。
+      proxy-url: ""
+
       # CN 账号每日自动签到（默认 true），09:00 和 21:00 本地时间。
       checkin_auto: true
 
@@ -114,6 +120,13 @@ plugins:
 
 模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`
 配置，无需插件侧重复。
+
+设置 `proxy-url` 后，chat、billing/签到/trial、token refresh、
+`executor.http_request`、usage 上报、OAuth state/token/account 请求和 usage
+endpoint 探测都会使用该代理。CLIProxyAPI v7.2.30 的 native plugin host HTTP
+API 不支持单次请求覆盖代理，因此显式插件代理由插件自身发送，不会出现在
+CPA request-log 中。浏览器打开的 OAuth URL 不由插件请求，浏览器需要自行具备
+相应网络路径。
 
 ## 生命周期
 
@@ -144,9 +157,10 @@ gofmt -l .
 go vet ./...
 ```
 
-插件所有上游调用走 CPA 宿主 HTTP 桥（`host.http.do` / `do_stream`），
-request-log 可捕获出站流量并应用宿主 transport 策略。仅在桥不可用
-（单元测试、v7.2.x 之前的宿主）时 fallback 到直连 HTTP client。
+`proxy-url` 为空时，共享请求 helper 保持现有路由：使用宿主桥的请求继续进入
+CPA request-log 并应用宿主 transport 策略；既有 OAuth、usage probe、Windows
+和旧宿主直连路径不变。设置 `proxy-url` 后，插件发起的全部 HTTP 请求改用插件
+代理，失败时不回退。
 
 完整开发流程见 [docs/development.md](docs/development.md)，模块结构见
 [docs/architecture.md](docs/architecture.md)。

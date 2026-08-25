@@ -23,7 +23,8 @@ registration.go   (in main.go) wbRegistration + capabilities + ConfigField
 envelope.go       (in main.go) envelope/okEnvelope/errorEnvelope helpers
 
 host_call.go      hostCall + hostBridgeUnwrap (RPC to CPA host)
-host_bridge.go    hostHTTPDo/DoStream/Read/Close + hostStreamReader + Direct fallbacks
+host_bridge.go    hostHTTPDo/DoStream/Read/Close + hostStreamReader + inherited Direct fallbacks
+proxy.go          atomic inherit/proxy/blocked snapshot + proxy transport/error redaction
 
 executor.go       handleExecExecute / handleExecStream
 stream.go         streamEmit/Close + pumpUpstreamStream + collectUpstreamStream + aggregate*
@@ -73,7 +74,10 @@ client → CPA → plugin.handleExecStream
   → resolveUpstreamModel(alias → upstream id)
   → prepareUpstreamBody (single JSON pass: forceStream + normalizeTools +
                           rewriteSystem + ensureSystemMessage + rewriteModel)
-  → hostHTTPDoStream (via CPA host bridge → request-log captured)
+  → hostHTTPDoStream
+      → proxy-url empty: inherited CPA host bridge/direct compatibility path
+      → proxy-url set: immutable plugin proxy client (no fallback)
+      → invalid proxy-url: blocked before network
   → pumpUpstreamStream (goroutine)
       → hostStreamReader → bufio.Scanner → SSE lines
       → cleanChunkJSON per line
@@ -110,12 +114,20 @@ panel.html → /v0/management/plugins/workbuddy/accounts
 
 ## Key design decisions
 
-1. **Host HTTP bridge for all upstream calls.** Every HTTP request to
-   CodeBuddy / CPAMP goes through `host.http.do` / `host.http.do_stream` so
-   CPA's request-log captures outbound traffic and host transport policy
-   (proxy, timeout) applies. The plugin's own `sharedHTTPClient` is a
-   fallback used only when the bridge is unavailable (unit tests, hosts
-   older than v7.2.x).
+1. **Plugin proxy is an explicit transport boundary.** With `proxy-url`
+   empty, `hostHTTPDo` / `hostHTTPDoStream` preserve existing routing: bridged
+   requests use CPA's global proxy, request-log and transport policy, while
+   established OAuth, usage-probe, Windows and old-host direct paths remain
+   compatible. With a valid `http`, `https`, `socks5` or `socks5h` URL, an
+   immutable plugin-owned client handles every plugin-initiated HTTP request,
+   including OAuth and usage probing. Invalid configuration and runtime proxy
+   failures fail closed without host/direct fallback or POST replay. Native
+   plugin host HTTP in CLIProxyAPI v7.2.30 has no per-request proxy override,
+   so explicit plugin-proxy traffic cannot appear in CPA's request-log. OAuth
+   start creates an isolated cookie jar. Before both token and account requests,
+   polling shallow-copies that client and applies the current explicit proxy;
+   inherit preserves the flow transport. A blocked configuration deletes the
+   flow before the next request can send.
 
 2. **Single-flight per account for billing API.** `cachedAccountDetails`
    uses a `sync.Map` of in-flight calls so concurrent dashboard refreshes

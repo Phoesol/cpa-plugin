@@ -101,6 +101,12 @@ plugins:
     workbuddy:
       enabled: true
 
+      # Optional plugin-level proxy for every HTTP request initiated by WorkBuddy.
+      # Supported schemes: http, https, socks5, socks5h.
+      # Empty/unset inherits existing CPA routing. Invalid settings and runtime
+      # proxy failures fail closed and never fall back to CPA or a direct route.
+      proxy-url: ""
+
       # Daily check-in automation for CN accounts (default true).
       # Runs at 09:00 and 21:00 local time.
       checkin_auto: true
@@ -132,6 +138,14 @@ Model aliases and exclusions are handled natively by CPA's
 `oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
 duplication needed.
 
+When `proxy-url` is set, chat, billing/check-in/trial, token refresh,
+`executor.http_request`, usage forwarding, OAuth state/token/account calls,
+and usage endpoint probes all use that proxy. Because CLIProxyAPI v7.2.30's
+native-plugin host HTTP API has no per-request proxy override, explicit plugin
+proxy traffic is sent by the plugin and does not appear in CPA's request-log.
+The OAuth URL opened by the browser is not fetched by the plugin; the browser
+needs its own network route.
+
 ## Lifecycle
 
 | State | CN account | Global account |
@@ -161,10 +175,11 @@ gofmt -l .
 go vet ./...
 ```
 
-The plugin uses CPA's host HTTP bridge (`host.http.do` / `do_stream`) for
-all upstream calls so request-log captures outbound traffic and host
-transport policy applies. A fallback direct HTTP client is used only when
-the bridge is unavailable (unit tests, hosts older than v7.2.x).
+With `proxy-url` empty, the shared request helpers preserve their existing
+routing: host-bridged requests use CPA's request-log and transport policy,
+while the established OAuth, usage-probe, Windows, and old-host direct paths
+remain unchanged. With `proxy-url` set, every plugin-initiated HTTP request
+uses the plugin proxy instead and never falls back.
 
 See [docs/development.md](docs/development.md) for the full workflow and
 [docs/architecture.md](docs/architecture.md) for the module map.

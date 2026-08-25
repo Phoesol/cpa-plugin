@@ -6,11 +6,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // check-in schedule: 09:00 and 21:00 local time.
@@ -55,57 +58,70 @@ const defaultUsageReportURL = "http://127.0.0.1:18317/v0/management/usage/import
 const fallbackUsageReportURL = "http://cpa-manager-plus:18317/v0/management/usage/import"
 
 // configure decodes plugin config from the lifecycle request.
-func configure(raw []byte) {
+func configure(raw []byte) error {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextCheckinAuto := true
 	nextLifecycleAuto := true
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
 	nextKeepaliveAuto := true
 	nextMgmtKey := ""
+	nextProxyURL := ""
 
 	cfgURL, cfgKey := "", ""
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
 		}
-		if err := json.Unmarshal(raw, &req); err == nil {
-			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "checkin_auto:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
-					nextCheckinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-				}
-				if strings.HasPrefix(line, "lifecycle_auto:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
-					v = strings.Trim(v, "\"'")
-					nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-				}
-				if strings.HasPrefix(line, "scheduler_mode:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
-					v = strings.Trim(v, "\"'")
-					if v == schedulerModeCredits {
-						nextSchedulerMode = schedulerModeCredits
-					}
-				}
-				if strings.HasPrefix(line, "usage_report_url:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_url:"))
-					cfgURL = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "usage_report_key:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
-					cfgKey = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "management_key:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
-					nextMgmtKey = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "token_keepalive:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
-					v = strings.Trim(v, "\"'")
-					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+		if err := json.Unmarshal(raw, &req); err != nil {
+			proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+			return errors.New("invalid plugin configuration")
+		}
+		var err error
+		nextProxyURL, err = parseProxyURLConfig(req.ConfigYAML)
+		if err != nil {
+			proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+			return err
+		}
+		for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "checkin_auto:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
+				nextCheckinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+			}
+			if strings.HasPrefix(line, "lifecycle_auto:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
+				v = strings.Trim(v, "\"'")
+				nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+			}
+			if strings.HasPrefix(line, "scheduler_mode:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
+				v = strings.Trim(v, "\"'")
+				if v == schedulerModeCredits {
+					nextSchedulerMode = schedulerModeCredits
 				}
 			}
+			if strings.HasPrefix(line, "usage_report_url:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_url:"))
+				cfgURL = strings.Trim(v, "\"'")
+			}
+			if strings.HasPrefix(line, "usage_report_key:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
+				cfgKey = strings.Trim(v, "\"'")
+			}
+			if strings.HasPrefix(line, "management_key:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
+				nextMgmtKey = strings.Trim(v, "\"'")
+			}
+			if strings.HasPrefix(line, "token_keepalive:") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
+				v = strings.Trim(v, "\"'")
+				nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
+			}
 		}
+	}
+
+	if err := configureProxy(nextProxyURL); err != nil {
+		return err
 	}
 
 	// Apply each setting under its own lock — no nesting.
@@ -136,6 +152,40 @@ func configure(raw []byte) {
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
+	return nil
+}
+
+func parseProxyURLConfig(raw []byte) (string, error) {
+	if strings.TrimSpace(string(raw)) == "" {
+		return "", nil
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return "", errors.New("invalid config_yaml")
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return "", errors.New("config_yaml must be a mapping")
+	}
+	root := document.Content[0]
+	value := ""
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "proxy-url" {
+			continue
+		}
+		node := root.Content[i+1]
+		if node.Kind != yaml.ScalarNode {
+			return "", errors.New("proxy-url must be a string")
+		}
+		if node.Tag == "!!null" {
+			value = ""
+			continue
+		}
+		if node.Tag != "!!str" {
+			return "", errors.New("proxy-url must be a string")
+		}
+		value = node.Value
+	}
+	return value, nil
 }
 
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.
@@ -186,15 +236,21 @@ func probeUsageReportURL() string {
 
 // probeURL does a quick HEAD/GET to check if the endpoint is reachable.
 func probeURL(target string, timeout time.Duration) bool {
-	client := &http.Client{Timeout: timeout}
+	state := currentProxyState()
+	if state.mode == proxyModeBlocked || state.mode == proxyModeExplicit && state.client == nil {
+		return false
+	}
+	client := &http.Client{Timeout: timeout, CheckRedirect: rejectHTTPRedirect}
+	if state.mode == proxyModeExplicit {
+		client.Transport = state.client.Transport
+	}
 	resp, err := client.Get(target)
 	if err != nil {
 		return false
 	}
 	defer resp.Body.Close()
-	// Any HTTP response (even 401) means the endpoint is reachable;
-	// connection refused / DNS failure means not reachable.
-	return resp.StatusCode > 0
+	// A non-redirect HTTP response means the endpoint itself is reachable.
+	return resp.StatusCode > 0 && (resp.StatusCode < http.StatusMultipleChoices || resp.StatusCode >= http.StatusBadRequest)
 }
 
 func readSecretFile(path string) string {
