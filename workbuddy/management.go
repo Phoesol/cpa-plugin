@@ -162,6 +162,7 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List WorkBuddy accounts with credits, plan and check-in status."},
+			{Method: http.MethodGet, Path: base + "/egress-ip", Description: "Get the current egress IP through the active WorkBuddy HTTP route."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
@@ -214,6 +215,14 @@ func handleManagement(raw []byte) ([]byte, error) {
 	switch {
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
+	case req.Method == http.MethodGet && path == base+"/egress-ip":
+		ip, err := fetchEgressIP()
+		if err != nil {
+			return okEnvelope(mgmtJSONResponse(http.StatusBadGateway, map[string]any{
+				"error": "egress IP unavailable",
+			}))
+		}
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ip": ip}))
 	case req.Method == http.MethodPost && path == base+"/refresh":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(true, true)))
 	case req.Method == http.MethodPost && path == base+"/checkin":

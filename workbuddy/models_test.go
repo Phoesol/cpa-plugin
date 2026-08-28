@@ -32,6 +32,10 @@ func TestWbModelsIncludesNewFixedModels(t *testing.T) {
 		{id: "kimi-k2.6", name: "Kimi K2.6", ctx: 262144, max: 8192, input: []string{"text", "image", "video"}, output: []string{"text"}},
 		{id: "kimi-k3-1", name: "Kimi K3", ctx: 1048576, max: 8192, input: []string{"text", "image", "video"}, output: []string{"text"}},
 		{id: "glm-5.3", name: "GLM-5.3", ctx: 1000000, max: 131072, input: []string{"text"}, output: []string{"text"}},
+		{id: "glm-5.3-flash", name: "GLM-5.3-Flash", ctx: 1048576, max: 131072, input: []string{"text", "image", "video", "file"}, output: []string{"text"}},
+		{id: "hy3-x", name: "Hy3 X", ctx: 262144, max: 8192},
+		{id: "hy4-preview", name: "Hy4 Preview", ctx: 1048576, max: 8192},
+		{id: "hy4-preview-x", name: "Hy4 Preview X", ctx: 1048576, max: 8192},
 	}
 	for _, tt := range tests {
 		m, ok := modelByID(models, tt.id)
@@ -46,6 +50,9 @@ func TestWbModelsIncludesNewFixedModels(t *testing.T) {
 		}
 		if !sameStrings(m.SupportedOutputModalities, tt.output) {
 			t.Fatalf("%s output modalities = %v", tt.id, m.SupportedOutputModalities)
+		}
+		if !sameStrings(m.SupportedGenerationMethods, []string{"chat"}) {
+			t.Fatalf("%s generation methods = %v", tt.id, m.SupportedGenerationMethods)
 		}
 	}
 }

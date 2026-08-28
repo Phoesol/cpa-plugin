@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.6
+
+### Proxy routing, models, request policy, and panel diagnostics
+
+- Add plugin-level explicit proxy routing while preserving inherited CPA routing and fail-closed behavior.
+- Add `hy3-x`, `hy4-preview`, `hy4-preview-x`, and `glm-5.3-flash` to the fixed model list.
+- Pin canonical-model `reasoning_effort`: Hy3 and Hy4 preview models use `high`, `glm-5.3` uses `xhigh`, and `glm-5.3-flash` uses `max`.
+- Sanitize blocked outbound billing and `cc_*` fingerprint fields without changing ordinary prompt text.
+- Add the authenticated `/egress-ip` management endpoint and non-blocking current egress IP display in the panel.
+
 ## 0.8.2
 
 ### Concurrency + lifecycle hardening

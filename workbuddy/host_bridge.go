@@ -111,7 +111,10 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("nil request")
 	}
-	state := currentProxyState()
+	return hostHTTPDoWithState(currentProxyState(), req)
+}
+
+func hostHTTPDoWithState(state *proxyRoutingState, req *http.Request) (*hostHTTPResponse, error) {
 	if state.mode == proxyModeBlocked || state.mode == proxyModeExplicit && state.client == nil {
 		if req.Body != nil {
 			_ = req.Body.Close()

@@ -3,7 +3,13 @@
 package main
 
 import (
+	"context"
 	_ "embed"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -249,6 +255,41 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 		"global_used":     glUsed,
 		"global_size":     glSize,
 	}
+}
+
+const egressIPURL = "https://api.ipify.org?format=json"
+
+func fetchEgressIP() (string, error) {
+	state := currentProxyState()
+	if runtime.GOOS == "windows" && state.mode == proxyModeInherit {
+		return "", fmt.Errorf("egress IP unavailable for inherited Windows routing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, egressIPURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := hostHTTPDoWithState(state, req)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("egress IP service returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		return "", fmt.Errorf("decode egress IP: %w", err)
+	}
+	parsed := net.ParseIP(strings.TrimSpace(payload.IP))
+	if parsed == nil {
+		return "", fmt.Errorf("egress IP service returned an invalid address")
+	}
+	return parsed.String(), nil
 }
 
 // Web panel (self-contained HTML, no external assets)
