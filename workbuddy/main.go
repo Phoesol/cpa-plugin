@@ -333,7 +333,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.8.6"
+var version = "0.8.7"
 
 func wbRegistration() registration {
 	return registration{
@@ -576,7 +576,7 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		return "0" + hex.EncodeToString([]byte(time.Now().Format("20060102150405")))
+		return fmt.Sprintf("%0*x", n*2, time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

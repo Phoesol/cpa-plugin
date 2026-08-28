@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.7
+
+### Client identity headers
+
+- Send the CodeBuddy-compatible `X-IDE-*` and `X-Agent-Intent` headers so upstream usage records identify CLI requests.
+- Generate independent 32-character hexadecimal request, conversation, conversation-request, and message IDs for every upstream request.
+
 ## 0.8.6
 
 ### Proxy routing, models, request policy, and panel diagnostics
