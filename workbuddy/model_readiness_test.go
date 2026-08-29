@@ -659,6 +659,52 @@ func TestModelRuntimeNotModifiedKeepsMetadataCacheWithoutRewrite(t *testing.T) {
 	}
 }
 
+func TestModelRuntimeNotModifiedWithoutMetadataCacheFailsAndRetries(t *testing.T) {
+	metadataCalls := 0
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if callbackID != "callback-not-modified-no-cache" {
+			t.Fatalf("callback ID = %q", callbackID)
+		}
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			return modelRuntimeFreshWorkBuddyResponse(), nil
+		case "models.dev":
+			metadataCalls++
+			if metadataCalls == 1 {
+				return &hostHTTPResponse{StatusCode: http.StatusNotModified, Headers: make(http.Header)}, nil
+			}
+			return modelRuntimeFreshMetadataResponse(), nil
+		default:
+			t.Fatalf("unexpected model request %s", req.URL)
+			return nil, nil
+		}
+	}
+
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	first := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-not-modified-first", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-not-modified-no-cache",
+	})
+	if first.State != modelFailed || first.ModelSource != modelSourceFresh || first.MetadataSource != modelSourceNone || first.ErrorCode != modelErrorModelsDevSchema || first.executable() || first.Models == nil || len(first.Models) != 0 {
+		t.Fatalf("first snapshot = %#v", first)
+	}
+	if runtime.metadataResult != nil {
+		t.Fatalf("304 without cache settled the runtime: %#v", runtime.metadataResult)
+	}
+
+	second := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-not-modified-second", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-not-modified-no-cache",
+	})
+	if metadataCalls != 2 {
+		t.Fatalf("metadata calls = %d, want 2", metadataCalls)
+	}
+	if second.State != modelReady || second.ModelSource != modelSourceFresh || second.MetadataSource != modelSourceFresh || !second.executable() {
+		t.Fatalf("second snapshot = %#v", second)
+	}
+}
+
 func TestModelRuntimeRetriesMetadataWithoutCache(t *testing.T) {
 	metadataCalls := 0
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
