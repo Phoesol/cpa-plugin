@@ -23,6 +23,29 @@ const (
 	modelRuntimeRawMetadataBody       = "raw-metadata-response-body-secret"
 )
 
+func installModelStatesForTest(t *testing.T, states map[string]modelReadinessState) *modelRuntime {
+	t.Helper()
+	runtime := newModelRuntime(newModelStore(t.TempDir()), func(*http.Request, string) (*hostHTTPResponse, error) {
+		t.Fatal("unexpected model bootstrap HTTP")
+		return nil, nil
+	})
+	generation := runtime.configGeneration.Load()
+	for authID, state := range states {
+		slot := runtime.authSlot(authID)
+		snapshot := modelReadinessSnapshot{
+			State:            state,
+			ModelSource:      modelSourceFresh,
+			MetadataSource:   modelSourceFresh,
+			Models:           []pluginapi.ModelInfo{},
+			configGeneration: generation,
+		}
+		slot.current.Store(&snapshot)
+	}
+	old := activeModelRuntime.Swap(runtime)
+	t.Cleanup(func() { activeModelRuntime.Store(old) })
+	return runtime
+}
+
 func TestModelRuntimeFreshBootstrapReady(t *testing.T) {
 	store := newModelStore(t.TempDir())
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {

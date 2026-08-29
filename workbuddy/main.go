@@ -678,6 +678,17 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 
 // -----------------------------------------------------------------------------
 
+func guardExecutorReadiness(authID string) []byte {
+	if currentModelRuntime().snapshotForAuthID(authID).State.executable() {
+		return nil
+	}
+	return errorEnvelopeWithStatus(
+		"not_ready",
+		"WorkBuddy model catalog is not ready",
+		http.StatusServiceUnavailable,
+	)
+}
+
 type executorRequestWire struct {
 	pluginapi.ExecutorRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -687,6 +698,9 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var req executorRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	if blocked := guardExecutorReadiness(req.AuthID); blocked != nil {
+		return blocked, nil
 	}
 	sa, err := parseStored(req.StorageJSON)
 	if err != nil {
@@ -747,6 +761,9 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	var req executorStreamRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	if blocked := guardExecutorReadiness(req.AuthID); blocked != nil {
+		return blocked, nil
 	}
 	sa, err := parseStored(req.StorageJSON)
 	if err != nil {

@@ -396,7 +396,12 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	// refreshed credential itself after Refresh returns (conductor.go
 	// refreshAuth → m.Update → persist). Writing from the plugin too would
 	// double-write the file.
-	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
+	response, err := okEnvelope(pluginapi.AuthRefreshResponse{Auth: toAuthDataForRefresh(sa)})
+	if err != nil {
+		return nil, err
+	}
+	currentModelRuntime().markAuthNotStarted(req.AuthID)
+	return response, nil
 }
 
 func buildLoginStoredAuth(tok tokenData, acct accountData) (*storedAuth, error) {

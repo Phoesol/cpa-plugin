@@ -21,6 +21,9 @@ func handleExecHTTPRequest(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	if blocked := guardExecutorReadiness(req.AuthID); blocked != nil {
+		return blocked, nil
+	}
 	method := strings.TrimSpace(req.Method)
 	if method == "" {
 		return nil, fmt.Errorf("executor HTTP request: method is required")

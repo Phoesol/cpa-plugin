@@ -188,6 +188,8 @@ func TestPumpUpstreamStreamEmitFailureDoesNotEmitSecondError(t *testing.T) {
 }
 
 func TestSynchronousExecutorsReturnTypedHTTPStatus(t *testing.T) {
+	const authID = "typed-http-status-ready"
+	installModelStatesForTest(t, map[string]modelReadinessState{authID: modelReady})
 	oldClient := sharedHTTPClient()
 	sharedClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -199,8 +201,10 @@ func TestSynchronousExecutorsReturnTypedHTTPStatus(t *testing.T) {
 	})}
 	t.Cleanup(func() { sharedClient = oldClient })
 
-	req := executorRequestWire{ExecutorRequest: executorTestRequest()}
-	streamReq := executorStreamRequest{ExecutorRequest: executorTestRequest()}
+	executorReq := executorTestRequest()
+	executorReq.AuthID = authID
+	req := executorRequestWire{ExecutorRequest: executorReq}
+	streamReq := executorStreamRequest{ExecutorRequest: executorReq}
 	for name, invoke := range map[string]func([]byte) ([]byte, error){
 		"execute":        handleExecExecute,
 		"execute_stream": handleExecStream,

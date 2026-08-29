@@ -175,15 +175,16 @@ func handleModelStatic(raw []byte) ([]byte, error) {
 }
 
 func handleModelForAuth(raw []byte) ([]byte, error) {
-	var req pluginapi.AuthModelRequest
+	var req authModelRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	// Always return the plugin's canonical provider key. The host skips any
-	// response whose Provider doesn't match the auth's provider, so echoing
-	// req.AuthProvider back would silently drop the model list whenever the
-	// auth file carries a non-canonical provider string.
 	cacheModelAliases(req.Host)
+	snapshot := currentModelRuntime().ensureForAuth(req)
 	models := []pluginapi.ModelInfo{}
+	if snapshot.State.executable() {
+		models = cloneModelInfos(snapshot.Models)
+		models = filterExcludedModels(models, req.Host)
+	}
 	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: models})
 }
