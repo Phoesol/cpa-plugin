@@ -184,14 +184,18 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		return r.publishLocked(req.AuthID, snapshot)
 	}
 
-	_, _, _ = r.store.loadModels(identitySHA256)
+	modelCache, modelCacheFound, modelCacheErr := r.store.loadModels(identitySHA256)
+	if modelCacheErr == nil && modelCacheFound {
+		snapshot.ModelSource = modelSourceCache
+		snapshot.ModelsFetchedAt = modelCache.FetchedAt
+	}
 	catalog, err := fetchWorkBuddyCatalog(sa, req.HostCallbackID, r.do)
 	if err != nil {
 		snapshot.State = modelFailed
 		snapshot.ErrorCode = workBuddyModelErrorCode(err)
 		return r.publishLocked(req.AuthID, snapshot)
 	}
-	modelCache := modelCatalogCacheV1{
+	modelCache = modelCatalogCacheV1{
 		SchemaVersion:  modelCacheSchemaVersion,
 		IdentitySHA256: identitySHA256,
 		Realm:          catalog.Realm,
@@ -202,6 +206,9 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	if err := r.store.saveModels(modelCache); err != nil {
 		snapshot.State = modelFailed
 		snapshot.ErrorCode = modelErrorCacheWrite
+		if modelCacheErr != nil {
+			snapshot.ErrorCode = modelErrorCacheRead
+		}
 		return r.publishLocked(req.AuthID, snapshot)
 	}
 	snapshot.ModelSource = modelSourceFresh
@@ -236,6 +243,9 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 			if err := r.store.saveMetadata(cache); err != nil {
 				snapshot.State = modelFailed
 				snapshot.ErrorCode = modelErrorCacheWrite
+				if metadata != nil && metadata.errorCode == modelErrorCacheRead {
+					snapshot.ErrorCode = modelErrorCacheRead
+				}
 				return r.publishLocked(req.AuthID, snapshot)
 			}
 			r.metadataCache = &cache

@@ -109,6 +109,113 @@ func TestModelRuntimeFreshBootstrapFailuresFailClosed(t *testing.T) {
 	}
 }
 
+func TestModelRuntimeFreshBootstrapRetainsValidModelCache(t *testing.T) {
+	root := t.TempDir()
+	store := newModelStore(root)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	identity, err := modelAuthIdentityFor("auth-cached", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := modelStoreTestCatalog(identity.sha256(), "cached")
+	if err := store.saveModels(cached); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveMetadata(modelStoreTestMetadata("cached")); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := newModelRuntime(store, modelRuntimeFreshFaultDo(t, root, modelRuntimeFaultWorkBuddyTransport))
+	got := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-cached", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-failure",
+	})
+	if got.ModelSource != modelSourceCache || !got.ModelsFetchedAt.Equal(cached.FetchedAt) {
+		t.Fatalf("valid model cache was not retained: %#v", got)
+	}
+	if got.ErrorCode != modelErrorWorkBuddyTransport {
+		t.Fatalf("error code = %q, want %q", got.ErrorCode, modelErrorWorkBuddyTransport)
+	}
+}
+
+func TestModelRuntimeFreshBootstrapModelFutureSchemaIsCacheRead(t *testing.T) {
+	root := t.TempDir()
+	store := newModelStore(root)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	identity, err := modelAuthIdentityFor("auth-future-models", sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "models", identity.sha256()+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	future := []byte(`{"schema_version":2}`)
+	if err := os.WriteFile(path, future, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	do := modelRuntimeFreshFaultDo(t, root, "")
+	runtime := newModelRuntime(store, func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "copilot.tencent.com" {
+			calls++
+		}
+		return do(req, callbackID)
+	})
+
+	got := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-future-models", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-failure",
+	})
+	if calls != 1 {
+		t.Fatalf("WorkBuddy refresh calls = %d, want 1", calls)
+	}
+	if got.State != modelFailed || got.ErrorCode != modelErrorCacheRead {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if got.ModelSource != modelSourceNone {
+		t.Fatalf("future model cache source = %q, want none", got.ModelSource)
+	}
+	if gotFile := modelStoreReadFile(t, path); string(gotFile) != string(future) {
+		t.Fatalf("future model cache was overwritten: %s", gotFile)
+	}
+}
+
+func TestModelRuntimeFreshBootstrapMetadataFutureSchemaIsCacheRead(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "metadata.json")
+	future := []byte(`{"schema_version":2}`)
+	if err := os.WriteFile(path, future, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	do := modelRuntimeFreshFaultDo(t, root, "")
+	runtime := newModelRuntime(newModelStore(root), func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "models.dev" {
+			calls++
+		}
+		return do(req, callbackID)
+	})
+
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	got := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-future-metadata", StorageJSON: mustJSON(sa)},
+		HostCallbackID:   "callback-failure",
+	})
+	if calls != 1 {
+		t.Fatalf("models.dev refresh calls = %d, want 1", calls)
+	}
+	if got.State != modelFailed || got.ErrorCode != modelErrorCacheRead {
+		t.Fatalf("snapshot = %#v", got)
+	}
+	if got.MetadataSource != modelSourceNone {
+		t.Fatalf("future metadata cache source = %q, want none", got.MetadataSource)
+	}
+	if gotFile := modelStoreReadFile(t, path); string(gotFile) != string(future) {
+		t.Fatalf("future metadata cache was overwritten: %s", gotFile)
+	}
+}
+
 func TestModelRuntimeFreshBootstrapSnapshotsAreReadOnly(t *testing.T) {
 	runtime := &modelRuntime{snapshots: map[string]modelReadinessSnapshot{
 		"auth-copy": {
