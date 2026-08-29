@@ -273,6 +273,15 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 	return nil
 }
 
+func creditsErrorsBlockLifecycle(errs []string) bool {
+	for _, message := range errs {
+		if strings.HasPrefix(message, "credits:") {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileOneAccount refreshes credits and applies lifecycle for one auth.
 // authIndex is used for host RPC (host.auth.get), authID (auth.ID) is used
 // for cache keys (accountCache/lifecycleState) so it matches the scheduler's
@@ -313,7 +322,10 @@ func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callb
 		// previous Load→Store sequence here had a check-then-act window
 		// where a concurrent dashboard cachedAccountDetails write could
 		// overwrite our merge with newer plan/checkin values).
-		_, _, cr2, _ := cachedAccountDetailsWithCallback(authID, sa, true, callbackID)
+		_, _, cr2, errs := cachedAccountDetailsWithCallback(authID, sa, true, callbackID)
+		if creditsErrorsBlockLifecycle(errs) {
+			return lifecycleNone, nil
+		}
 		cr = cr2
 		if cr == nil {
 			return lifecycleNone, nil

@@ -8,8 +8,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -280,6 +283,8 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
+var errEnterpriseCreditsUnsupported = errors.New("enterprise credits unsupported")
+
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	return fetchUserResourceWithCallback(sa, "")
 }
@@ -288,6 +293,20 @@ func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsS
 	release := acquireUserResourceSlot()
 	defer release()
 
+	cfg := currentFeatureRuntime()
+	if cfg != nil && cfg.enterpriseCredits && accountRegion(sa) == "cn" {
+		credits, err := fetchEnterpriseCreditsCN(sa, callbackID)
+		if err == nil {
+			return credits, nil
+		}
+		if !errors.Is(err, errEnterpriseCreditsUnsupported) {
+			return nil, err
+		}
+	}
+	return fetchPersonalUserResourceWithCallback(sa, callbackID)
+}
+
+func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsSummary, error) {
 	now := time.Now()
 	// Status 0=active, 3=exhausted-but-still-listed.
 	const pageSize = 100
@@ -375,6 +394,137 @@ func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsS
 		}
 	}
 	return sum, nil
+}
+
+func fetchEnterpriseCreditsCN(sa *storedAuth, callbackID string) (*creditsSummary, error) {
+	req, err := http.NewRequest(http.MethodPost, billingBaseFor(sa)+"/billing/meter/get-enterprise-user-usage", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	billingHeaders(req, sa)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("X-Client-Platform", "web")
+	req.Header.Set("Origin", "https://www.codebuddy.cn")
+	req.Header.Set("Referer", "https://www.codebuddy.cn/")
+
+	resp, err := hostHTTPDoWithCallback(req, callbackID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, classifyEnterpriseHTTPStatus(resp.StatusCode)
+	}
+	return parseEnterpriseCredits(resp.Body)
+}
+
+func classifyEnterpriseHTTPStatus(status int) error {
+	if status == http.StatusNotFound {
+		return fmt.Errorf("enterprise credits status %d: %w", status, errEnterpriseCreditsUnsupported)
+	}
+	return fmt.Errorf("enterprise credits status %d", status)
+}
+
+func parseEnterpriseCredits(raw []byte) (*creditsSummary, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("parse enterprise credits: %w", err)
+	}
+	codeRaw, ok := envelope["code"]
+	if !ok {
+		return nil, errors.New("enterprise credits response missing code")
+	}
+	var code int
+	if err := json.Unmarshal(codeRaw, &code); err != nil || code != 0 {
+		return nil, errors.New("enterprise credits response rejected")
+	}
+	dataRaw, ok := envelope["data"]
+	if !ok {
+		return nil, errors.New("enterprise credits response missing data")
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(dataRaw, &data); err != nil || data == nil {
+		return nil, errors.New("enterprise credits response has invalid data")
+	}
+	credit, err := enterpriseCreditNumber(data, "credit")
+	if err != nil {
+		return nil, err
+	}
+	limit, err := enterpriseCreditNumber(data, "limitNum")
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, errors.New("enterprise credits limit must be positive")
+	}
+	used, err := roundedEnterpriseCredits(credit)
+	if err != nil {
+		return nil, err
+	}
+	size, err := roundedEnterpriseCredits(limit)
+	if err != nil {
+		return nil, err
+	}
+	remain := size - used
+	if remain < 0 {
+		remain = 0
+	}
+	return &creditsSummary{
+		TotalRemain: remain,
+		TotalUsed:   used,
+		TotalSize:   size,
+		PackCount:   1,
+		Packages: []packageSummary{{
+			Name:       "Enterprise",
+			Remain:     remain,
+			Used:       used,
+			Size:       size,
+			CycleStart: enterpriseCreditString(data["cycleStartTime"]),
+			CycleEnd:   enterpriseCreditString(data["cycleEndTime"]),
+		}},
+	}, nil
+}
+
+func enterpriseCreditNumber(data map[string]json.RawMessage, key string) (float64, error) {
+	raw, ok := data[key]
+	if !ok {
+		return 0, fmt.Errorf("enterprise credits response missing %s", key)
+	}
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	var text string
+	switch v := value.(type) {
+	case json.Number:
+		text = v.String()
+	case string:
+		text = v
+	default:
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	number, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	return number, nil
+}
+
+func roundedEnterpriseCredits(value float64) (int64, error) {
+	rounded := math.Round(value)
+	if rounded > math.MaxInt64 {
+		return 0, errors.New("enterprise credits value is too large")
+	}
+	return int64(rounded), nil
+}
+
+func enterpriseCreditString(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
 }
 
 func fetchPaymentType(sa *storedAuth) string {
