@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -51,7 +52,15 @@ type hostHTTPResponse struct {
 // call; the flat method/url/headers/body fields are an alternate form we don't
 // use (host prefers Request when present).
 type rpcHostHTTPRequestWire struct {
-	Request *rpcHostHTTPInner `json:"request,omitempty"`
+	HostCallbackID string            `json:"host_callback_id,omitempty"`
+	Request        *rpcHostHTTPInner `json:"request,omitempty"`
+}
+
+type rpcHostHTTPBufferedResponseWire struct {
+	StatusCodeSnake  int                 `json:"status_code"`
+	StatusCodePascal int                 `json:"StatusCode"`
+	Headers          map[string][]string `json:"headers,omitempty"`
+	Body             []byte              `json:"body,omitempty"`
 }
 
 type rpcHostHTTPInner struct {
@@ -59,6 +68,34 @@ type rpcHostHTTPInner struct {
 	URL     string              `json:"url,omitempty"`
 	Headers map[string][]string `json:"headers,omitempty"`
 	Body    []byte              `json:"body,omitempty"`
+}
+
+func decodeBufferedHostHTTPResponse(result []byte) (*hostHTTPResponse, error) {
+	var wire rpcHostHTTPBufferedResponseWire
+	if err := json.Unmarshal(result, &wire); err != nil {
+		return nil, fmt.Errorf("decode host.http.do response: %w", err)
+	}
+	statusCode := wire.StatusCodeSnake
+	if statusCode == 0 {
+		statusCode = wire.StatusCodePascal
+	}
+	return &hostHTTPResponse{
+		StatusCode: statusCode,
+		Headers:    http.Header(wire.Headers),
+		Body:       wire.Body,
+	}, nil
+}
+
+func newRPCHostHTTPRequestWire(req *http.Request, body []byte, callbackID string) rpcHostHTTPRequestWire {
+	return rpcHostHTTPRequestWire{
+		HostCallbackID: strings.TrimSpace(callbackID),
+		Request: &rpcHostHTTPInner{
+			Method:  req.Method,
+			URL:     req.URL.String(),
+			Headers: map[string][]string(req.Header),
+			Body:    body,
+		},
+	}
 }
 
 type rpcHostHTTPStreamResponseWire struct {
@@ -108,13 +145,21 @@ func hostBridgeAvailable() bool {
 // returned instead of replaying the request directly; many upstream calls are
 // POSTs and may already have executed.
 func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
+	return hostHTTPDoWithCallback(req, "")
+}
+
+func hostHTTPDoWithCallback(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("nil request")
 	}
-	return hostHTTPDoWithState(currentProxyState(), req)
+	return hostHTTPDoWithStateAndCallback(currentProxyState(), req, callbackID)
 }
 
 func hostHTTPDoWithState(state *proxyRoutingState, req *http.Request) (*hostHTTPResponse, error) {
+	return hostHTTPDoWithStateAndCallback(state, req, "")
+}
+
+func hostHTTPDoWithStateAndCallback(state *proxyRoutingState, req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 	if state.mode == proxyModeBlocked || state.mode == proxyModeExplicit && state.client == nil {
 		if req.Body != nil {
 			_ = req.Body.Close()
@@ -142,14 +187,7 @@ func hostHTTPDoWithState(state *proxyRoutingState, req *http.Request) (*hostHTTP
 	if !hostBridgeAvailable() || runtime.GOOS == "windows" {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
-	wire := rpcHostHTTPRequestWire{
-		Request: &rpcHostHTTPInner{
-			Method:  req.Method,
-			URL:     req.URL.String(),
-			Headers: map[string][]string(req.Header),
-			Body:    bodyBytes,
-		},
-	}
+	wire := newRPCHostHTTPRequestWire(req, bodyBytes, callbackID)
 	raw, err := hostCall(pluginabi.MethodHostHTTPDo, mustJSON(wire))
 	if err != nil {
 		return nil, fmt.Errorf("host.http.do: %w", err)
@@ -158,19 +196,7 @@ func hostHTTPDoWithState(state *proxyRoutingState, req *http.Request) (*hostHTTP
 	if err != nil {
 		return nil, err
 	}
-	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
-	}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, fmt.Errorf("decode host.http.do response: %w", err)
-	}
-	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    http.Header(resp.Headers),
-		Body:       resp.Body,
-	}, nil
+	return decodeBufferedHostHTTPResponse(result)
 }
 
 // hostHTTPDoDirect executes the request via the plugin's own http.Client.
@@ -231,6 +257,10 @@ type hostHTTPStream struct {
 // Direct and explicit-proxy streams retain the live response body so callers can
 // consume flushed SSE data before EOF.
 func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, error) {
+	return hostHTTPDoStreamWithCallback(req, "")
+}
+
+func hostHTTPDoStreamWithCallback(req *http.Request, callbackID string) (*hostHTTPStream, int, http.Header, error) {
 	if req == nil {
 		return nil, 0, nil, fmt.Errorf("nil request")
 	}
@@ -257,14 +287,7 @@ func hostHTTPDoStream(req *http.Request) (*hostHTTPStream, int, http.Header, err
 	if !hostBridgeAvailable() {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
-	wire := rpcHostHTTPRequestWire{
-		Request: &rpcHostHTTPInner{
-			Method:  req.Method,
-			URL:     req.URL.String(),
-			Headers: map[string][]string(req.Header),
-			Body:    bodyBytes,
-		},
-	}
+	wire := newRPCHostHTTPRequestWire(req, bodyBytes, callbackID)
 	raw, err := hostCall(pluginabi.MethodHostHTTPDoStream, mustJSON(wire))
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("host.http.do_stream: %w", err)
