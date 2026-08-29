@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.0
+
+### Configurable prompt desensitization
+
+- Add an opt-in U+200B desensitizer with an editable, persistent 85-term default list.
+- Restrict rewriting to system/developer prompt text, marked instruction blocks, and tool title/description fields.
+- Add panel controls to save custom terms, restore the built-in list, or reset the feature to disabled defaults.
+
+### OAuth, host bridge, and stream correctness
+
+- Use path-derived identity for OAuth poll results and add an explicit WorkBuddy desktop OAuth profile.
+- Preserve request-scoped host callback context and accept both `StatusCode` and `status_code` host responses.
+- Emit CPA-native stream errors and preserve typed upstream HTTP status for synchronous failures.
+
+### Credits and panel workflows
+
+- Bound concurrent billing fetches to four and add an opt-in, CN-only strict enterprise credits probe.
+- Prevent lifecycle actions from using stale credits after a refresh error and recognize `额度已用尽`.
+- Add sequential multi-file credential import, account search, and remaining-credit sorting to the panel.
+
 ## 0.8.7
 
 ### Client identity headers
