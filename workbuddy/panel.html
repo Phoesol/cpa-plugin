@@ -1016,6 +1016,9 @@ function onImportMaskClick(e){
   if(e.target===document.getElementById("importModal")) closeImportModal();
 }
 const MAX_IMPORT_FILE_BYTES=2*1024*1024;
+function safeImportName(name){
+  return String(name||"文件").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,120)||"文件";
+}
 async function importOneCredential(raw){
   let payload={raw};
   try{payload={json:JSON.parse(raw)}}catch(_){}
@@ -1027,9 +1030,10 @@ async function importAuth(btn){
   const files=document.getElementById("importFiles");
   if(raw) imports.push({name:"粘贴内容",raw});
   for(const file of Array.from(files.files||[])){
-    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name:file.name,error:"超过 2 MiB"});continue}
-    try{imports.push({name:file.name,raw:await file.text()})}
-    catch(_){imports.push({name:file.name,error:"读取失败"})}
+    const name=safeImportName(file.name);
+    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name,error:"超过 2 MiB"});continue}
+    try{imports.push({name,raw:await file.text()})}
+    catch(_){imports.push({name,error:"读取失败"})}
   }
   if(!imports.length){toast("请选择文件或粘贴凭证 JSON","warn");return}
   busy(btn,true);
@@ -1042,13 +1046,14 @@ async function importAuth(btn){
         results.push({name:item.name,error:d.success?"":"导入失败"});
       }catch(_){results.push({name:item.name,error:"请求失败"})}
     }
+    document.getElementById("importRaw").value="";
+    files.value="";
     const ok=results.filter(r=>!r.error).length;
     const fail=results.length-ok;
     const detail=results.map(r=>r.name+"："+(r.error||"成功")).join("；");
-    document.getElementById("importRaw").value="";
-    files.value="";
     toast("导入完成",fail?"warn":"ok",ok+" 成功 / "+fail+" 失败 · "+detail);
-    if(ok){closeImportModal();await load(true)}
+    if(fail===0) closeImportModal();
+    if(ok) await load(true)
   }finally{busy(btn,false)}
 }
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});

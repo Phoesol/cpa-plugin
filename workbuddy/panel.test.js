@@ -287,3 +287,64 @@ test("available balance excludes disabled and exhausted positive credits", () =>
   assert.match(html, /CN 可用 100 \/ 已用 6/);
   assert.doesNotMatch(html, /剩余\(可用\)<\/div><div class="v ok">175<\/div>/);
 });
+
+test("partial import clears credentials and keeps modal open", async () => {
+  const { context, elements } = loadPanel();
+  const modal = elements.get("importModal") || context.document.getElementById("importModal");
+  modal.classList.add("show");
+  const raw = context.document.getElementById("importRaw");
+  raw.value = "raw-secret-credential";
+  const files = context.document.getElementById("importFiles");
+  files.value = "selected";
+  files.files = [
+    { name: "ok.json", size: 10, async text() { return "credential-one"; } },
+    { name: "bad.json", size: 10, async text() { return "credential-two"; } },
+  ];
+  context.importOneCredential = async value => ({ success: value !== "credential-two" });
+  let toastDetail = "";
+  context.toast = (title, kind, detail) => { toastDetail = title + " " + kind + " " + detail; };
+  let reloads = 0;
+  context.load = async () => { reloads += 1; return true; };
+  await context.importAuth({ dataset: {}, innerHTML: "导入", disabled: false });
+  assert.equal(modal.classList.contains("show"), true);
+  assert.equal(raw.value, "");
+  assert.equal(files.value, "");
+  assert.equal(reloads, 1);
+  assert.match(toastDetail, /ok\.json：成功/);
+  assert.match(toastDetail, /bad\.json：导入失败/);
+  assert.doesNotMatch(toastDetail, /raw-secret|credential-one|credential-two/);
+});
+
+test("partial import all success closes modal", async () => {
+  const { context, elements } = loadPanel();
+  const modal = elements.get("importModal") || context.document.getElementById("importModal");
+  modal.classList.add("show");
+  const files = context.document.getElementById("importFiles");
+  files.value = "selected";
+  files.files = [
+    { name: "ok.json", size: 10, async text() { return "credential-one"; } },
+  ];
+  context.importOneCredential = async () => ({ success: true });
+  context.toast = () => {};
+  context.load = async () => true;
+  await context.importAuth({ dataset: {}, innerHTML: "导入", disabled: false });
+  assert.equal(modal.classList.contains("show"), false);
+});
+
+test("partial import all failure keeps modal open and sanitizes long names", async () => {
+  const { context, elements } = loadPanel();
+  const modal = elements.get("importModal") || context.document.getElementById("importModal");
+  modal.classList.add("show");
+  const files = context.document.getElementById("importFiles");
+  files.value = "selected";
+  files.files = [
+    { name: "\u0000\u001f\u007f" + "x".repeat(125) + ".json", size: 10, async text() { return "credential-one"; } },
+  ];
+  context.importOneCredential = async () => ({ success: false });
+  let toastDetail = "";
+  context.toast = (_title, _kind, detail) => { toastDetail = detail; };
+  context.load = async () => { throw new Error("unexpected reload"); };
+  await context.importAuth({ dataset: {}, innerHTML: "导入", disabled: false });
+  assert.equal(modal.classList.contains("show"), true);
+  assert.equal(toastDetail, "0 成功 / 1 失败 · " + "x".repeat(120) + "：导入失败");
+});
