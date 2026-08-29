@@ -158,6 +158,7 @@ func configure(raw []byte) error {
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
+	currentModelRuntime().advanceConfigGeneration()
 	return nil
 }
 

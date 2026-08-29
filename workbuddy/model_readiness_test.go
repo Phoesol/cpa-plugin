@@ -625,6 +625,270 @@ func TestModelRuntimeConcurrentReaders(t *testing.T) {
 	}
 }
 
+func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "models.dev" {
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"},"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
+		}
+		token := req.Header.Get("Authorization")
+		if strings.HasSuffix(token, "signature-a") {
+			close(oldStarted)
+			<-releaseOld
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		}
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-beta"]}]}}`)}, nil
+	}
+	root := t.TempDir()
+	store := newModelStore(root)
+	runtime := newModelRuntime(store, do)
+	saOld := syntheticStoredAuth(t, workBuddyRealmCN)
+	parts := strings.Split(saOld.Auth.AccessToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("synthetic token has %d parts", len(parts))
+	}
+	saOld.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-a"
+	saNew := *saOld
+	saNew.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-b"
+	identity, err := modelAuthIdentityFor("auth-race", &saNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveModels(modelStoreTestCatalog(identity.sha256(), "pre-race")); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDone := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		oldDone <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-race", StorageJSON: mustJSON(saOld)}})
+	}()
+	<-oldStarted
+	newResult := runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-race", StorageJSON: mustJSON(&saNew)}})
+	if newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+		t.Fatalf("new result = %#v", newResult)
+	}
+	modelPath := filepath.Join(root, "models", identity.sha256()+".json")
+	backupBeforeOldFinished := modelStoreReadFile(t, modelPath+".bak")
+	close(releaseOld)
+	<-oldDone
+
+	current := runtime.snapshotForAuthID("auth-race")
+	if current.State != modelReady || current.ErrorCode != modelErrorNone || len(current.Models) != 1 || current.Models[0].ID != "serve-beta" {
+		t.Errorf("old generation overwrote current = %#v", current)
+	}
+	cached, found, err := store.loadModels(identity.sha256())
+	if err != nil || !found || len(cached.Models) != 1 || cached.Models[0].ID != "serve-beta" {
+		t.Errorf("cache=%#v found=%v err=%v", cached, found, err)
+	}
+	if backupAfterOldFinished := modelStoreReadFile(t, modelPath+".bak"); string(backupAfterOldFinished) != string(backupBeforeOldFinished) {
+		t.Errorf("old generation replaced backup: before=%s after=%s", backupBeforeOldFinished, backupAfterOldFinished)
+	}
+
+	t.Run("late failure does not publish an error", func(t *testing.T) {
+		oldStarted := make(chan struct{})
+		releaseOld := make(chan struct{})
+		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+			if req.URL.Host == "models.dev" {
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
+			}
+			if strings.HasSuffix(req.Header.Get("Authorization"), "signature-a") {
+				close(oldStarted)
+				<-releaseOld
+				return nil, errors.New(modelRuntimeRawWorkBuddyTransport)
+			}
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-beta"]}]}}`)}, nil
+		}
+		runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+		oldDone := make(chan modelReadinessSnapshot, 1)
+		go func() {
+			oldDone <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-race-error", StorageJSON: mustJSON(saOld)}})
+		}()
+		<-oldStarted
+		newResult := runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-race-error", StorageJSON: mustJSON(&saNew)}})
+		if newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+			t.Fatalf("new result = %#v", newResult)
+		}
+		close(releaseOld)
+		<-oldDone
+		current := runtime.snapshotForAuthID("auth-race-error")
+		if current.State != modelReady || current.ErrorCode != modelErrorNone || len(current.Models) != 1 || current.Models[0].ID != "serve-beta" {
+			t.Fatalf("old generation published its failure = %#v", current)
+		}
+	})
+}
+
+func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
+	t.Run("in-flight catalog save", func(t *testing.T) {
+		var workBuddyCalls atomic.Int32
+		oldStarted := make(chan struct{})
+		releaseOld := make(chan struct{})
+		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+			switch req.URL.Host {
+			case "copilot.tencent.com":
+				if workBuddyCalls.Add(1) == 1 {
+					close(oldStarted)
+					<-releaseOld
+					return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+				}
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-beta"]}]}}`)}, nil
+			case "models.dev":
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"},"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
+			default:
+				t.Fatalf("unexpected request %s", req.URL)
+				return nil, nil
+			}
+		}
+		store := newModelStore(t.TempDir())
+		runtime := newModelRuntime(store, do)
+		sa := syntheticStoredAuth(t, workBuddyRealmCN)
+		identity, err := modelAuthIdentityFor("auth-config-catalog", sa)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-config-catalog", StorageJSON: mustJSON(sa)}}
+		oldDone := make(chan modelReadinessSnapshot, 1)
+		go func() { oldDone <- runtime.ensureForAuth(req) }()
+		<-oldStarted
+		if got := runtime.advanceConfigGeneration(); got != 1 {
+			t.Fatalf("config generation = %d, want 1", got)
+		}
+		invalidated := runtime.snapshotForAuthID("auth-config-catalog")
+		if invalidated.State != modelNotStarted || invalidated.executable() || invalidated.Models == nil || len(invalidated.Models) != 0 || invalidated.configGeneration != 1 {
+			t.Errorf("invalidated snapshot = %#v", invalidated)
+		}
+		close(releaseOld)
+		<-oldDone
+		if _, found, err := store.loadModels(identity.sha256()); err != nil || found {
+			t.Fatalf("stale generation cache found=%v err=%v", found, err)
+		}
+		if current := runtime.snapshotForAuthID("auth-config-catalog"); current.State != modelNotStarted || current.executable() {
+			t.Fatalf("stale generation published = %#v", current)
+		}
+
+		newResult := runtime.ensureForAuth(req)
+		if workBuddyCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+			t.Fatalf("calls=%d new result=%#v", workBuddyCalls.Load(), newResult)
+		}
+	})
+
+	t.Run("in-flight metadata save", func(t *testing.T) {
+		root := t.TempDir()
+		store := newModelStore(root)
+		backup := modelStoreTestMetadata("before-config-backup")
+		primary := modelStoreTestMetadata("before-config-primary")
+		primary.FetchedAt = backup.FetchedAt.Add(time.Minute)
+		if err := store.saveMetadata(backup); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.saveMetadata(primary); err != nil {
+			t.Fatal(err)
+		}
+		metadataPath := filepath.Join(root, "metadata.json")
+		primaryBefore := modelStoreReadFile(t, metadataPath)
+		backupBefore := modelStoreReadFile(t, metadataPath+".bak")
+
+		var workBuddyCalls atomic.Int32
+		var metadataCalls atomic.Int32
+		metadataStarted := make(chan struct{})
+		releaseMetadata := make(chan struct{})
+		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+			switch req.URL.Host {
+			case "copilot.tencent.com":
+				workBuddyCalls.Add(1)
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+			case "models.dev":
+				if metadataCalls.Add(1) == 1 {
+					close(metadataStarted)
+					<-releaseMetadata
+				}
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+			default:
+				t.Fatalf("unexpected request %s", req.URL)
+				return nil, nil
+			}
+		}
+		runtime := newModelRuntime(store, do)
+		sa := syntheticStoredAuth(t, workBuddyRealmCN)
+		req := authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-config-metadata", StorageJSON: mustJSON(sa)}}
+		oldDone := make(chan modelReadinessSnapshot, 1)
+		go func() { oldDone <- runtime.ensureForAuth(req) }()
+		<-metadataStarted
+		if got := runtime.advanceConfigGeneration(); got != 1 {
+			t.Fatalf("config generation = %d, want 1", got)
+		}
+		invalidated := runtime.snapshotForAuthID("auth-config-metadata")
+		if invalidated.State != modelNotStarted || invalidated.executable() || invalidated.Models == nil || len(invalidated.Models) != 0 {
+			t.Errorf("invalidated snapshot = %#v", invalidated)
+		}
+		close(releaseMetadata)
+		<-oldDone
+		if got := modelStoreReadFile(t, metadataPath); string(got) != string(primaryBefore) {
+			t.Fatalf("stale generation replaced metadata primary: before=%s after=%s", primaryBefore, got)
+		}
+		if got := modelStoreReadFile(t, metadataPath+".bak"); string(got) != string(backupBefore) {
+			t.Fatalf("stale generation replaced metadata backup: before=%s after=%s", backupBefore, got)
+		}
+		if runtime.metadataResult != nil {
+			t.Fatalf("stale generation settled metadata = %#v", runtime.metadataResult)
+		}
+
+		newResult := runtime.ensureForAuth(req)
+		if workBuddyCalls.Load() != 2 || metadataCalls.Load() != 2 || newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-alpha" {
+			t.Fatalf("workbuddy=%d metadata=%d new result=%#v", workBuddyCalls.Load(), metadataCalls.Load(), newResult)
+		}
+	})
+}
+
+func TestModelRuntimeFailedConfigureKeepsGeneration(t *testing.T) {
+	runtime := newModelRuntime(newModelStore(t.TempDir()), func(*http.Request, string) (*hostHTTPResponse, error) {
+		t.Fatal("configure performed model HTTP")
+		return nil, nil
+	})
+	previousRuntime := activeModelRuntime.Swap(runtime)
+	oldProxy := proxyState.Load()
+	oldFeatures := featureRuntime.Load()
+	usageReportMu.RLock()
+	oldUsageURL, oldUsageKey := usageReportURL, usageReportKey
+	usageReportMu.RUnlock()
+	t.Cleanup(func() {
+		activeModelRuntime.Swap(previousRuntime)
+		proxyState.Store(oldProxy)
+		featureRuntime.Store(oldFeatures)
+		usageReportMu.Lock()
+		usageReportURL, usageReportKey = oldUsageURL, oldUsageKey
+		usageReportMu.Unlock()
+	})
+
+	failures := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "request parse", raw: []byte(`{`)},
+		{name: "proxy parse", raw: mustJSON(map[string]any{"config_yaml": []byte("proxy-url: [not-a-string]\n")})},
+		{name: "feature parse", raw: mustJSON(map[string]any{"config_yaml": []byte("desensitize_terms: [x]\n")})},
+		{name: "proxy configure", raw: mustJSON(map[string]any{"config_yaml": []byte("proxy-url: direct\n")})},
+	}
+	for _, tt := range failures {
+		t.Run(tt.name, func(t *testing.T) {
+			before := runtime.configGeneration.Load()
+			if err := configure(tt.raw); err == nil {
+				t.Fatal("invalid configure succeeded")
+			}
+			if got := runtime.configGeneration.Load(); got != before {
+				t.Fatalf("config generation = %d, want %d", got, before)
+			}
+		})
+	}
+
+	if err := configure(mustJSON(map[string]any{"config_yaml": []byte("usage_report_url: http://127.0.0.1:1\n")})); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.configGeneration.Load(); got != 1 {
+		t.Fatalf("successful configure advanced generation to %d, want 1", got)
+	}
+}
+
 func TestModelRuntimeFreshBootstrapPreloadsMetadataWithoutSettlingRefresh(t *testing.T) {
 	store := newModelStore(t.TempDir())
 	cached := modelStoreTestMetadata("cached")
