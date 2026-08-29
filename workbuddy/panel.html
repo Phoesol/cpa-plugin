@@ -565,17 +565,32 @@ function renderSummary(accounts){
   let cnRemain=0, cnUsed=0, glRemain=0, glUsed=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    if(c.known){ remain+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    const spendable=!a.disabled&&!a.exhausted;
+    if(c.known){
+      if(spendable) remain+=c.remain;
+      used+=c.used;
+      size+=c.size;
+      knownN++;
+    }
     if(a.disabled) disabledN++;
     if(a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0))) exhaustedN++;
   });
   let allRemain=0, allUsed=0, allSize=0;
   all.forEach(a=>{
     const c=creditOf(a);
-    if(!c.known) return;
-    allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
-    if((a.region||"cn")==="global"){ glRemain+=c.remain; glUsed+=c.used; }
-    else { cnRemain+=c.remain; cnUsed+=c.used; }
+    const spendable=!a.disabled&&!a.exhausted;
+    if(c.known){
+      if(spendable) allRemain+=c.remain;
+      allUsed+=c.used;
+      allSize+=c.size;
+      if((a.region||"cn")==="global"){
+        if(spendable) glRemain+=c.remain;
+        glUsed+=c.used;
+      }else{
+        if(spendable) cnRemain+=c.remain;
+        cnUsed+=c.used;
+      }
+    }
   });
   const total=size>0?size:(remain+used);
   const pct=total>0?Math.round(used/total*100):0;

@@ -273,3 +273,17 @@ test("credits sort keeps real zero above unknown without mutation", () => {
   assert.deepEqual(ids(context.accountsForView(accounts)), ["unknown", "zero", "positive"]);
   assert.deepEqual(accounts, original);
 });
+
+test("available balance excludes disabled and exhausted positive credits", () => {
+  const { context, elements } = loadPanel();
+  context.renderSummary([
+    { region: "cn", credits: { total_remain: 100, total_used: 1, total_size: 101 } },
+    { region: "cn", disabled: true, credits: { total_remain: 50, total_used: 2, total_size: 52 } },
+    { region: "cn", exhausted: true, credits: { total_remain: 25, total_used: 3, total_size: 28 } },
+  ]);
+  const html = elements.get("summaryBox").innerHTML;
+  assert.match(html, /剩余\(可用\)<\/div><div class="v ok">100<\/div>/);
+  assert.match(html, /已用\(消耗\)<\/div><div class="v [^"]*">6<\/div>/);
+  assert.match(html, /CN 可用 100 \/ 已用 6/);
+  assert.doesNotMatch(html, /剩余\(可用\)<\/div><div class="v ok">175<\/div>/);
+});
