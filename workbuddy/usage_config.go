@@ -116,13 +116,13 @@ func configure(raw []byte) error {
 		}
 	}
 
-	nextFeatures, err := parseFeatureRuntime(configYAML)
-	if err != nil {
-		return err
-	}
-	nextProxyURL, err = parseProxyURLConfig(configYAML)
+	nextProxyURL, err := parseProxyURLConfig(configYAML)
 	if err != nil {
 		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+		return err
+	}
+	nextFeatures, err := parseFeatureRuntime(configYAML)
+	if err != nil {
 		return err
 	}
 	if err := configureProxy(nextProxyURL); err != nil {

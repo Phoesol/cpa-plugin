@@ -157,6 +157,26 @@ func TestConfigureFeatureRuntimeKeepsPreviousSnapshotOnInvalidTerms(t *testing.T
 	}
 }
 
+func TestConfigureInvalidProxyFailsClosedEvenWhenFeatureValidationFails(t *testing.T) {
+	oldProxy := currentProxyState()
+	oldFeatures := featureRuntime.Load()
+	t.Cleanup(func() {
+		proxyState.Store(oldProxy)
+		featureRuntime.Store(oldFeatures)
+	})
+	proxyState.Store(&proxyRoutingState{mode: proxyModeInherit})
+
+	err := configure(mustJSON(map[string]any{
+		"config_yaml": []byte("desensitize_terms: [x]\nproxy-url: [not-a-string]\n"),
+	}))
+	if err == nil {
+		t.Fatal("invalid configuration was accepted")
+	}
+	if got := currentProxyState().mode; got != proxyModeBlocked {
+		t.Fatalf("proxy mode = %v, want blocked", got)
+	}
+}
+
 func TestFeatureRuntimeSnapshotsStayIndependentDuringConcurrentReads(t *testing.T) {
 	old := featureRuntime.Load()
 	t.Cleanup(func() { featureRuntime.Store(old) })
