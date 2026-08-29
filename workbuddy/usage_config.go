@@ -68,6 +68,7 @@ func configure(raw []byte) error {
 	nextProxyURL := ""
 
 	cfgURL, cfgKey := "", ""
+	var configYAML []byte
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
@@ -76,13 +77,8 @@ func configure(raw []byte) error {
 			proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
 			return errors.New("invalid plugin configuration")
 		}
-		var err error
-		nextProxyURL, err = parseProxyURLConfig(req.ConfigYAML)
-		if err != nil {
-			proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
-			return err
-		}
-		for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
+		configYAML = req.ConfigYAML
+		for _, line := range strings.Split(string(configYAML), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "checkin_auto:") {
 				v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
@@ -120,9 +116,19 @@ func configure(raw []byte) error {
 		}
 	}
 
+	nextFeatures, err := parseFeatureRuntime(configYAML)
+	if err != nil {
+		return err
+	}
+	nextProxyURL, err = parseProxyURLConfig(configYAML)
+	if err != nil {
+		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+		return err
+	}
 	if err := configureProxy(nextProxyURL); err != nil {
 		return err
 	}
+	featureRuntime.Store(nextFeatures)
 
 	// Apply each setting under its own lock — no nesting.
 	checkinAutoMu.Lock()

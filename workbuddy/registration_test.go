@@ -45,3 +45,30 @@ func TestRegistrationConfigFieldsMatchImplementedConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistrationExposesForkFusionConfig(t *testing.T) {
+	got := make(map[string]pluginapi.ConfigField)
+	for _, field := range wbRegistration().Metadata.ConfigFields {
+		got[field.Name] = field
+	}
+	for name, wantType := range map[string]pluginapi.ConfigFieldType{
+		"desensitize":        pluginapi.ConfigFieldTypeBoolean,
+		"desensitize_terms":  pluginapi.ConfigFieldTypeArray,
+		"enterprise_credits": pluginapi.ConfigFieldTypeBoolean,
+	} {
+		field, ok := got[name]
+		if !ok {
+			t.Fatalf("missing %s config field", name)
+		}
+		if field.Type != wantType {
+			t.Fatalf("%s type = %q, want %q", name, field.Type, wantType)
+		}
+	}
+	mode, ok := got["oauth_client_mode"]
+	if !ok {
+		t.Fatal("missing oauth_client_mode config field")
+	}
+	if mode.Type != pluginapi.ConfigFieldTypeEnum || !sameStrings(mode.EnumValues, []string{"cli", "workbuddy"}) {
+		t.Fatalf("oauth_client_mode = %#v", mode)
+	}
+}
