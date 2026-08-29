@@ -122,3 +122,34 @@ func TestPrepareUpstreamBodyDoesNotDesensitizeWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled desensitize changed payload: %s", out)
 	}
 }
+
+func TestPrepareUpstreamBodyDesensitizesNestedToolMetadataBelowStructuredMetadata(t *testing.T) {
+	old := featureRuntime.Load()
+	cfg, err := parseFeatureRuntime([]byte("desensitize: true\ndesensitize_terms: [attack]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRuntime.Store(cfg)
+	t.Cleanup(func() { featureRuntime.Store(old) })
+
+	out := prepareUpstreamBody([]byte(`{
+		"model":"m",
+		"tools":[{"function":{
+			"description":{"field":{"description":"attack"}},
+			"title":[{"title":"attack"}]
+		}}]
+	}`), nil, nil, "m")
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatal(err)
+	}
+	function := body["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)
+	description := function["description"].(map[string]any)["field"].(map[string]any)["description"]
+	if description != "a"+zeroWidthSpace+"ttack" {
+		t.Errorf("nested description = %q", description)
+	}
+	title := function["title"].([]any)[0].(map[string]any)["title"]
+	if title != "a"+zeroWidthSpace+"ttack" {
+		t.Errorf("nested title = %q", title)
+	}
+}

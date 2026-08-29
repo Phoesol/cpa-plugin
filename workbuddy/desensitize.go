@@ -276,11 +276,13 @@ func desensitizeToolMetadataInPlace(value any, cfg *featureRuntimeConfig) bool {
 	case map[string]any:
 		changed := false
 		for key, value := range node {
-			if (key == "description" || key == "title") {
-				if text, ok := value.(string); ok && desensitizeStringField(node, key, text, cfg) {
-					changed = true
+			if key == "description" || key == "title" {
+				if text, ok := value.(string); ok {
+					if desensitizeStringField(node, key, text, cfg) {
+						changed = true
+					}
+					continue
 				}
-				continue
 			}
 			if desensitizeToolMetadataInPlace(value, cfg) {
 				changed = true
