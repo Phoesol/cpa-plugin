@@ -40,7 +40,7 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 3. rewriteModel: swap client model name to upstream model id.
 	rewriteModelInPlace(obj, upstreamModel)
 
-	// 4. rewriteSystem: strip blocked Claude Code template phrases + force thinking.
+	// 4. system sanitization: strip blocked Claude Code template phrases.
 	rewriteSystemInPlace(obj)
 
 	// 5. desensitize the configured prompt and tool metadata fields.
@@ -128,9 +128,6 @@ func rewriteSystemInPlace(obj map[string]any) bool {
 		if rewriteContentField(msg) {
 			changed = true
 		}
-	}
-	if forceMaxThinking(obj) {
-		changed = true
 	}
 	return changed
 }
@@ -310,9 +307,6 @@ func rewriteSystemForUpstream(payload []byte) []byte {
 			changed = true
 		}
 	}
-	if forceMaxThinking(obj) {
-		changed = true
-	}
 	if !changed {
 		return payload
 	}
@@ -433,28 +427,6 @@ func hasFingerprint(s string) bool {
 		}
 	}
 	return sanitizeBillingHeaderRE.MatchString(s)
-}
-
-// forceMaxThinking pins reasoning_effort to the fixed level required by each
-// supported upstream model. Returns true if the object changed.
-func forceMaxThinking(obj map[string]any) bool {
-	model, _ := obj["model"].(string)
-	effort := ""
-	switch {
-	case strings.HasPrefix(model, "hy3"), model == "hy4-preview", model == "hy4-preview-x":
-		effort = "high"
-	case model == "glm-5.3":
-		effort = "xhigh"
-	case model == "glm-5.3-flash":
-		effort = "max"
-	default:
-		return false
-	}
-	if current, _ := obj["reasoning_effort"].(string); current == effort {
-		return false
-	}
-	obj["reasoning_effort"] = effort
-	return true
 }
 
 // rewriteModelInBody replaces the "model" field of a chat-completions body
