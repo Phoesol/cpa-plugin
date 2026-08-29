@@ -24,15 +24,24 @@ func TestParseEnterpriseCreditsStrict(t *testing.T) {
 
 	for _, raw := range []string{
 		`{"data":{"credit":1,"limitNum":100}}`,
+		`{"code":null,"data":{"credit":1,"limitNum":100}}`,
 		`{"code":0,"data":{"credit":1}}`,
 		`{"code":0,"data":{"credit":-1,"limitNum":100}}`,
 		`{"code":0,"data":{"credit":"NaN","limitNum":100}}`,
 		`{"code":0,"data":{"credit":1,"limitNum":0}}`,
+		`{"code":0,"data":{"credit":1,"limitNum":9223372036854775807}}`,
 		`{"code":7,"msg":"denied","data":{"credit":1,"limitNum":100}}`,
 	} {
 		if _, err := parseEnterpriseCredits([]byte(raw)); err == nil {
 			t.Errorf("accepted invalid enterprise response %s", raw)
 		}
+	}
+}
+
+func TestParseEnterpriseCreditsRejectsInt64Overflow(t *testing.T) {
+	got, err := parseEnterpriseCredits([]byte(`{"code":0,"data":{"credit":1,"limitNum":9223372036854775808}}`))
+	if err == nil {
+		t.Fatalf("accepted unrepresentable enterprise credits: %#v", got)
 	}
 }
 

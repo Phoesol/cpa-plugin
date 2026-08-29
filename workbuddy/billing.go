@@ -433,8 +433,8 @@ func parseEnterpriseCredits(raw []byte) (*creditsSummary, error) {
 	if !ok {
 		return nil, errors.New("enterprise credits response missing code")
 	}
-	var code int
-	if err := json.Unmarshal(codeRaw, &code); err != nil || code != 0 {
+	var code *int
+	if err := json.Unmarshal(codeRaw, &code); err != nil || code == nil || *code != 0 {
 		return nil, errors.New("enterprise credits response rejected")
 	}
 	dataRaw, ok := envelope["data"]
@@ -513,7 +513,7 @@ func enterpriseCreditNumber(data map[string]json.RawMessage, key string) (float6
 
 func roundedEnterpriseCredits(value float64) (int64, error) {
 	rounded := math.Round(value)
-	if rounded > math.MaxInt64 {
+	if rounded >= 1<<63 {
 		return 0, errors.New("enterprise credits value is too large")
 	}
 	return int64(rounded), nil
