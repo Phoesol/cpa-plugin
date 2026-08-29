@@ -2,9 +2,9 @@
 
 A [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) plugin that
 provides **Tencent CodeBuddy** (`copilot.tencent.com` CN and `workbuddy.ai`
-Global) as a native OAuth provider: a fixed model catalog, streaming executor,
-credit-aware scheduling, daily check-in automation, and a built-in management
-dashboard.
+Global) as a native OAuth provider: per-account dynamic model discovery,
+streaming execution, credit-aware scheduling, daily check-in automation, and a
+built-in management dashboard.
 
 [中文文档 → README_CN.md](README_CN.md)
 
@@ -12,9 +12,9 @@ dashboard.
 
 - **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
   host's auth store. CN and Global realms share one plugin, one config block.
-- **Fixed model catalog** — the plugin always returns its versioned built-in
-  model list; host-side `oauth-model-alias` / `oauth-excluded-models` config
-  still applies.
+- **Dynamic model catalog**: the plugin discovers and caches each authenticated
+  account's model entitlements and enriches missing metadata from models.dev.
+  Host-side `oauth-model-alias` / `oauth-excluded-models` config still applies.
 - **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
   via `host.stream.emit`) and non-streaming (SSE folded into a single
   completion). `tool_choice` normalization, Claude Code template sanitization,
@@ -77,15 +77,15 @@ one `workbuddy-<uid>.json` per account to the auth store.
 
 ### 4. Use it
 
-Call the OpenAI-compatible endpoint with any alias that maps to a workbuddy
-model:
+Call the OpenAI-compatible endpoint with any alias that maps to a model in the
+account's discovered catalog:
 
 ```bash
 curl http://localhost:8317/v1/chat/completions \
   -H "Authorization: Bearer $CPA_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "point/deepseek-v4-flash",
+    "model": "client-alias",
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true
   }'
@@ -145,6 +145,59 @@ native-plugin host HTTP API has no per-request proxy override, explicit plugin
 proxy traffic is sent by the plugin and does not appear in CPA's request-log.
 The OAuth URL opened by the browser is not fetched by the plugin; the browser
 needs its own network route.
+
+## Dynamic model catalog
+
+`model.static` is an offline fallback contract. It returns only `auto` with the
+generic default metadata template and never reads account caches or performs a
+network request. The first `model.for_auth` call for an account is the
+authenticated bootstrap boundary:
+
+1. WorkBuddy `GET /v3/config` supplies the account's entitled model IDs and
+   serving fields. Only an HTTP 404 or 405 falls back to the legacy
+   `GET /console/enterprises/personal/models` endpoint; other failures do not.
+2. [models.dev `/models.json`](https://models.dev/models.json) supplies
+   canonical metadata for fields that WorkBuddy omitted. It never determines
+   account entitlement or overrides WorkBuddy serving fields.
+3. Source responses are validated before they replace the persistent cache and
+   an immutable per-account catalog is published.
+
+The cache root comes from `os.UserConfigDir()` rather than a hard-coded
+platform path:
+
+```plaintext
+<user-config-dir>/CLIProxyAPI/workbuddy/model-catalog/
+  metadata.json
+  metadata.json.bak
+  models/
+    <identity-sha256>.json
+    <identity-sha256>.json.bak
+```
+
+For example, the default path for Linux root is
+`/root/.config/CLIProxyAPI/workbuddy/model-catalog/`.
+
+A first bootstrap with no valid cache is fail-closed: both sources must fetch,
+validate, and persist successfully before the account becomes `ready`.
+`model.for_auth` returns an empty successful model response if bootstrap fails.
+On later process starts, the first call still attempts both refreshes. If a
+refresh fails but that source has a valid last-good cache, the account starts
+`stale` and uses that cache. A source without either a fresh result or valid
+last-good cache leaves the account `failed`.
+
+Only `ready` and `stale` are executable states. `not_started`, `loading`, and
+`failed` are blocked at all executor entry points with a fixed, redacted
+`not_ready` response and HTTP 503; the scheduler also excludes them. The panel
+keeps loading and exposes `model_status` with per-account source and timestamp
+fields. Its fixed error categories are `auth_invalid`,
+`workbuddy_transport`, `workbuddy_http`, `workbuddy_schema`,
+`models_dev_transport`, `models_dev_http`, `models_dev_schema`, `cache_read`,
+and `cache_write`; raw upstream errors, response bodies, credentials, and cache
+paths are not exposed.
+
+There is no background or request-time refresh, panel retry endpoint, or
+Enterprise custom-model source. A new process start or an auth, token, or
+plugin-config generation change supplies the next bootstrap opportunity.
 
 ## Lifecycle
 

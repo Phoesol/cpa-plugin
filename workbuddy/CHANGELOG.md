@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Dynamic model bootstrap
+
+- Discover each authenticated account's model entitlements from WorkBuddy, with a 404/405-only legacy endpoint fallback.
+- Enrich missing serving metadata from models.dev without a static model mapping or metadata table.
+- Persist separate global metadata and per-auth model last-good caches, and use them for fail-closed `ready` or executable `stale` startup semantics.
+- Expose redacted `model_status` readiness in the panel and gate executor and scheduler access to `ready` or `stale` accounts.
+
+### Management and panel maintenance
+
+- Stop valid management keys from consuming the failed-authentication rate-limit bucket.
+- Classify empty, non-JSON, malformed, and non-2xx panel responses without exposing response bodies or native errors.
+- Sort credits as positive, real zero, then unknown while preserving the original sort cycle and source order.
+- Exclude disabled and exhausted accounts from the panel's spendable remaining-credit total.
+- Keep partial-import failures visible by safe filename, clear credential inputs immediately, and close the modal only when every import succeeds.
+- Build panel requests from the host BasePath, store a query key in `sessionStorage`, and remove it from the URL.
+
 ## 0.9.0
 
 ### Configurable prompt desensitization

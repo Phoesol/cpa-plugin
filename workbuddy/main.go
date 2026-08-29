@@ -380,9 +380,8 @@ func wbRegistration() registration {
 
 //
 // CPA applies oauth-model-alias to the models this plugin registers, so the
-// gateway may route a request whose model ID is an alias (e.g.
-// "point/deepseek-v4-flash") to this executor. The upstream only knows the
-// real model IDs, so the plugin must map the alias back before forwarding.
+// gateway may route "client-alias" to this executor while the upstream only
+// knows "upstream-model". The plugin must map the alias back before forwarding.
 //
 // ExecutorRequest carries no host config, so the alias table is cached from
 // the AuthModelRequest.Host summary every time the host asks for models
@@ -706,8 +705,8 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve oauth-model-alias (e.g. "point/deepseek-v4-flash") back to the
-	// real upstream model ID; the upstream rejects unknown alias IDs.
+	// Resolve oauth-model-alias ("client-alias" -> "upstream-model") before
+	// forwarding; the upstream rejects unknown alias IDs.
 	upstreamModel := resolveUpstreamModel(req.Model, req.AuthAttributes)
 	started := time.Now()
 	authUID := ""

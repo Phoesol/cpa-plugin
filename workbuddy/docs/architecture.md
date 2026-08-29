@@ -8,7 +8,7 @@ driven via the `pluginabi` RPC interface.
 
 | Capability | Implementation file | What it does |
 |---|---|---|
-| `ModelProvider` | `models.go` | Fixed model list, alias reverse-resolution, `oauth-excluded-models` filter |
+| `ModelProvider` | `models.go`, `model_source_*.go`, `model_store.go`, `model_readiness.go` | Static `auto` fallback, authenticated per-account discovery, models.dev enrichment, persistent last-good cache, readiness gates, alias reverse-resolution, `oauth-excluded-models` filter |
 | `AuthProvider` | `oauth.go`, `auth_parse.go` (in `authfile.go` / `main.go`) | OAuth login flow (CN + Global), token refresh, auth file parse |
 | `Executor` | `executor.go`, `stream.go`, `payload.go` | Chat completions, streaming SSE pump, request body rewriting |
 | `Scheduler` | `scheduler.go`, `active_auth.go` | Optional panel-selected account routing (`scheduler_mode: credits`) |
@@ -31,8 +31,12 @@ stream.go         streamEmit/Close + pumpUpstreamStream + collectUpstreamStream 
 payload.go        prepareUpstreamBody + InPlace mutators (forceStream/normalizeTools/
                   rewriteSystem/ensureSystemMessage/rewriteModel) + legacy wrappers
 
-models.go         wbModels + cacheModelAliases + resolveUpstreamModel +
-                  parseModelAliasAttribute + filterExcludedModels
+models.go         static auto/default metadata + model.for_auth response + alias/
+                  exclusion handling
+model_source_workbuddy.go WorkBuddy /v3/config + 404/405-only legacy fallback + validation
+model_source_modelsdev.go models.dev /models.json parser, matching, and additive enrichment
+model_store.go     separated metadata/per-auth JSON caches + identity hash + atomic .bak writes
+model_readiness.go per-auth bootstrap flights + global metadata flight + immutable readiness snapshots
 
 oauth.go          handleStartLogin/PollLogin/RefreshAuth + newLoginClient + doJSON
 auth_parse.go     (in authfile.go / main.go) handleParseAuth + parseStored + toAuthData
@@ -69,8 +73,11 @@ stored.go         (in main.go / models.go) storedAuth/storedTokens/storedAccount
 ### Chat completion (streaming)
 
 ```
-client → CPA → plugin.handleExecStream
-  → parseStored(auth file)
+client -> CPA -> plugin.handleExecStream
+  -> read immutable per-auth readiness snapshot
+      -> ready/stale: continue without waiting or refreshing
+      -> not_started/loading/failed: return redacted not_ready HTTP 503
+  -> parseStored(auth file)
   → resolveUpstreamModel(alias → upstream id)
   → prepareUpstreamBody (single JSON pass: forceStream + normalizeTools +
                           rewriteSystem + ensureSystemMessage + rewriteModel)
@@ -87,6 +94,65 @@ client → CPA → plugin.handleExecStream
   → invalidateAccountCredits (async)
   → host calls UsagePlugin.HandleUsage → handleUsage → forwardUsageToCPAMP (sync)
 ```
+
+### Authenticated model bootstrap
+
+`model.static` is independent of this flow and returns only the generic `auto`
+fallback. The first `model.for_auth` for each auth performs the authenticated
+bootstrap:
+
+```plaintext
+model.for_auth
+  -> parse credentials and realm; carry host_callback_id to source requests
+  -> derive identity JSON: provider + realm + UID + EnterpriseID
+      -> include AuthID only when UID is absent
+      -> SHA-256 the JSON; credentials never enter the identity or file name
+  -> enter the per-auth flight
+  -> WorkBuddy source
+      -> GET /v3/config
+      -> only HTTP 404/405: GET /console/enterprises/personal/models
+      -> validate the complete entitlement/serving snapshot
+      -> persist the per-auth cache
+  -> enter or join the process-global models.dev flight
+      -> GET https://models.dev/models.json, with cached ETag when available
+      -> validate canonical metadata and enrich only missing serving fields
+      -> persist the global metadata cache
+  -> check config generation + token SHA-256 + identity SHA-256
+  -> atomically publish an immutable ready or stale snapshot
+```
+
+The source path is therefore `source -> validate -> persist -> publish`.
+Fresh data is never published if validation or persistence fails. Source
+requests use the callback-aware host bridge, but the inherited callback wire
+does not guarantee an overall request timeout.
+
+The stores are separated under the root derived from `os.UserConfigDir()`:
+
+```plaintext
+CLIProxyAPI/workbuddy/model-catalog/
+  metadata.json                    global canonical metadata
+  metadata.json.bak                previous valid metadata primary
+  models/<identity-sha256>.json    one WorkBuddy catalog per auth identity
+  models/<identity-sha256>.json.bak
+```
+
+Each successful replacement first preserves the previous valid primary as
+`.bak`. A cache is usable only after schema, timestamps, realm, identity hash,
+and model facts validate. With no valid cache, either source failing leaves the
+auth `failed`; with a valid last-good for every failed source, the auth is
+published `stale`.
+
+The per-auth flight serializes WorkBuddy refreshes for one auth while allowing
+different auths to initialize concurrently. The global flight shares one
+models.dev refresh. The generation gate prevents a late request for an old
+config, token, or identity from saving or publishing over current state.
+
+Panel, executor, and scheduler only read immutable snapshots. They do not wait
+on flights or perform network or disk work. Executor accepts `ready` and
+`stale`; other states return redacted `not_ready` HTTP 503. Scheduler considers
+only `ready` and `stale`, and defers to CPA when no eligible candidate exists.
+There is no background refresh, panel retry endpoint, or Enterprise custom
+model source.
 
 ### Daily check-in (CN, 09:00 / 21:00)
 
@@ -162,8 +228,9 @@ panel.html → /v0/management/plugins/workbuddy/accounts
 
 - **Auth store**: `host.auth.list` / `host.auth.get` / `host.auth.save` —
   plugin never writes auth files directly to disk, always via host RPC.
-- **Model registration**: `model.static` / `model.for_auth` RPC, plus
-  `oauth-model-alias` / `oauth-excluded-models` from host config.
+- **Model registration**: `model.static` returns only `auto`; the first
+  `model.for_auth` performs authenticated discovery and returns dynamic models.
+  Host `oauth-model-alias` / `oauth-excluded-models` is applied to each response.
 - **Streaming**: `host.stream.emit` / `host.stream.close` — async SSE
   chunks pushed to the client without blocking the executor return.
 - **Usage**: `usage.handle` RPC — host calls `UsagePlugin.HandleUsage`
@@ -171,6 +238,6 @@ panel.html → /v0/management/plugins/workbuddy/accounts
 - **Management**: `management.register` returns routes under
   `/v0/management/plugins/workbuddy/*` and a panel resource under
   `/v0/resource/plugins/workbuddy/panel`.
-- **Scheduler**: `scheduler.pick` RPC — plugin returns `Handled: true` with
-  an `AuthID` only when `scheduler_mode: credits` and a valid candidate
-  exists; otherwise defers.
+- **Scheduler**: `scheduler.pick` RPC reads readiness and returns `Handled: true`
+  with an `AuthID` only when `scheduler_mode: credits` and a `ready` or `stale`
+  candidate exists; otherwise it defers.
