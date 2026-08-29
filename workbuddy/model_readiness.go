@@ -76,12 +76,53 @@ type modelMetadataStatus struct {
 	ErrorCode modelErrorCode
 }
 
-type modelMetadataResult struct {
+type modelCatalogSelection struct {
+	cache     modelCatalogCacheV1
+	source    modelSnapshotSource
+	errorCode modelErrorCode
+	ok        bool
+}
+
+func selectModelCatalog(
+	fresh modelCatalogCacheV1,
+	freshOK bool,
+	cached modelCatalogCacheV1,
+	cacheOK bool,
+	failure modelErrorCode,
+) modelCatalogSelection {
+	if freshOK {
+		return modelCatalogSelection{cache: fresh, source: modelSourceFresh, ok: true}
+	}
+	if cacheOK {
+		return modelCatalogSelection{cache: cached, source: modelSourceCache, errorCode: failure, ok: true}
+	}
+	return modelCatalogSelection{source: modelSourceNone, errorCode: failure}
+}
+
+type metadataSelection struct {
 	cache     metadataCacheV1
 	source    modelSnapshotSource
 	errorCode modelErrorCode
 	ok        bool
 }
+
+func selectMetadata(
+	fresh metadataCacheV1,
+	freshOK bool,
+	cached metadataCacheV1,
+	cacheOK bool,
+	failure modelErrorCode,
+) metadataSelection {
+	if freshOK {
+		return metadataSelection{cache: fresh, source: modelSourceFresh, ok: true}
+	}
+	if cacheOK {
+		return metadataSelection{cache: cached, source: modelSourceCache, errorCode: failure, ok: true}
+	}
+	return metadataSelection{source: modelSourceNone, errorCode: failure}
+}
+
+type modelMetadataResult = metadataSelection
 
 type modelRuntime struct {
 	store            *modelStore
@@ -184,92 +225,106 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		return r.publishLocked(req.AuthID, snapshot)
 	}
 
-	modelCache, modelCacheFound, modelCacheErr := r.store.loadModels(identitySHA256)
-	if modelCacheErr == nil && modelCacheFound {
-		snapshot.ModelSource = modelSourceCache
-		snapshot.ModelsFetchedAt = modelCache.FetchedAt
-	}
+	cachedModels, cachedModelsOK, modelCacheErr := r.store.loadModels(identitySHA256)
+	var freshModels modelCatalogCacheV1
+	freshModelsOK := false
+	modelFailure := modelErrorNone
 	catalog, err := fetchWorkBuddyCatalog(sa, req.HostCallbackID, r.do)
 	if err != nil {
-		snapshot.State = modelFailed
-		snapshot.ErrorCode = workBuddyModelErrorCode(err)
-		return r.publishLocked(req.AuthID, snapshot)
-	}
-	modelCache = modelCatalogCacheV1{
-		SchemaVersion:  modelCacheSchemaVersion,
-		IdentitySHA256: identitySHA256,
-		Realm:          catalog.Realm,
-		FetchedAt:      time.Now().UTC(),
-		Endpoint:       catalog.Endpoint,
-		Models:         catalog.Models,
-	}
-	if err := r.store.saveModels(modelCache); err != nil {
-		snapshot.State = modelFailed
-		snapshot.ErrorCode = modelErrorCacheWrite
-		if modelCacheErr != nil {
-			snapshot.ErrorCode = modelErrorCacheRead
+		modelFailure = workBuddyModelErrorCode(err)
+	} else {
+		freshModels = modelCatalogCacheV1{
+			SchemaVersion:  modelCacheSchemaVersion,
+			IdentitySHA256: identitySHA256,
+			Realm:          catalog.Realm,
+			FetchedAt:      time.Now().UTC(),
+			Endpoint:       catalog.Endpoint,
+			Models:         catalog.Models,
 		}
-		return r.publishLocked(req.AuthID, snapshot)
+		if err := r.store.saveModels(freshModels); err != nil {
+			modelFailure = modelErrorCacheWrite
+			if modelCacheErr != nil {
+				modelFailure = modelErrorCacheRead
+			}
+		} else {
+			freshModelsOK = true
+		}
 	}
-	snapshot.ModelSource = modelSourceFresh
-	snapshot.ModelsFetchedAt = modelCache.FetchedAt
+	modelSelection := selectModelCatalog(freshModels, freshModelsOK, cachedModels, cachedModelsOK, modelFailure)
 
 	metadata := r.metadataResult
 	if metadata == nil || !metadata.ok {
-		etag := ""
-		if r.metadataCache != nil {
-			etag = r.metadataCache.ETag
+		var cachedMetadata metadataCacheV1
+		cachedMetadataOK := r.metadataCache != nil
+		if cachedMetadataOK {
+			cachedMetadata = *r.metadataCache
 		}
-		fetched, err := fetchModelsDevMetadata(etag, req.HostCallbackID, r.do)
+
+		var freshMetadata metadataCacheV1
+		freshMetadataOK := false
+		metadataFailure := modelErrorNone
+		fetched, err := fetchModelsDevMetadata(cachedMetadata.ETag, req.HostCallbackID, r.do)
 		if err != nil {
-			snapshot.State = modelFailed
-			snapshot.ErrorCode = modelsDevModelErrorCode(err)
-			return r.publishLocked(req.AuthID, snapshot)
-		}
-		if fetched.NotModified {
-			if r.metadataCache == nil {
-				snapshot.State = modelFailed
-				snapshot.ErrorCode = modelErrorModelsDevSchema
-				return r.publishLocked(req.AuthID, snapshot)
+			metadataFailure = modelsDevModelErrorCode(err)
+		} else if fetched.NotModified {
+			if cachedMetadataOK {
+				freshMetadata = cachedMetadata
+				freshMetadataOK = true
+			} else {
+				metadataFailure = modelErrorModelsDevSchema
 			}
-			metadata = &modelMetadataResult{cache: *r.metadataCache, source: modelSourceFresh, ok: true}
 		} else {
-			cache := metadataCacheV1{
+			freshMetadata = metadataCacheV1{
 				SchemaVersion: modelCacheSchemaVersion,
 				ETag:          fetched.ETag,
 				FetchedAt:     time.Now().UTC(),
 				Records:       fetched.Records,
 			}
-			if err := r.store.saveMetadata(cache); err != nil {
-				snapshot.State = modelFailed
-				snapshot.ErrorCode = modelErrorCacheWrite
+			if err := r.store.saveMetadata(freshMetadata); err != nil {
+				metadataFailure = modelErrorCacheWrite
 				if metadata != nil && metadata.errorCode == modelErrorCacheRead {
-					snapshot.ErrorCode = modelErrorCacheRead
+					metadataFailure = modelErrorCacheRead
 				}
-				return r.publishLocked(req.AuthID, snapshot)
+			} else {
+				freshMetadataOK = true
+				r.metadataCache = &freshMetadata
 			}
-			r.metadataCache = &cache
-			metadata = &modelMetadataResult{cache: cache, source: modelSourceFresh, ok: true}
 		}
-		r.metadataResult = metadata
+
+		selected := selectMetadata(freshMetadata, freshMetadataOK, cachedMetadata, cachedMetadataOK, metadataFailure)
+		metadata = &selected
+		if selected.ok {
+			r.metadataResult = metadata
+		}
 	}
 
+	snapshot.ModelSource = modelSelection.source
+	if modelSelection.ok {
+		snapshot.ModelsFetchedAt = modelSelection.cache.FetchedAt
+	}
 	snapshot.MetadataSource = metadata.source
-	snapshot.MetadataFetchedAt = metadata.cache.FetchedAt
-	models := make([]pluginapi.ModelInfo, len(modelCache.Models))
-	for i, model := range modelCache.Models {
+	if metadata.ok {
+		snapshot.MetadataFetchedAt = metadata.cache.FetchedAt
+	}
+	snapshot.ErrorCode = modelSelection.errorCode
+	if snapshot.ErrorCode == modelErrorNone {
+		snapshot.ErrorCode = metadata.errorCode
+	}
+	if !modelSelection.ok || !metadata.ok {
+		snapshot.State = modelFailed
+		return r.publishLocked(req.AuthID, snapshot)
+	}
+
+	models := make([]pluginapi.ModelInfo, len(modelSelection.cache.Models))
+	for i, model := range modelSelection.cache.Models {
 		models[i] = modelInfoFromSources(model, matchModelsDevRecord(model.ID, metadata.cache.Records))
 	}
 	snapshot.Models = models
-	if snapshot.ModelSource == modelSourceFresh && snapshot.MetadataSource == modelSourceFresh {
+	if modelSelection.source == modelSourceFresh && metadata.source == modelSourceFresh {
 		snapshot.State = modelReady
 		snapshot.ErrorCode = modelErrorNone
 	} else {
-		snapshot.State = modelFailed
-		snapshot.Models = []pluginapi.ModelInfo{}
-		if metadata.errorCode != modelErrorNone {
-			snapshot.ErrorCode = metadata.errorCode
-		}
+		snapshot.State = modelStale
 	}
 	return r.publishLocked(req.AuthID, snapshot)
 }
