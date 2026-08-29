@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -124,25 +123,44 @@ func selectMetadata(
 
 type modelMetadataResult = metadataSelection
 
+type modelGenerationKey struct {
+	TokenSHA256    [sha256.Size]byte
+	IdentitySHA256 string
+}
+
+type modelAuthSlot struct {
+	mu       sync.Mutex
+	current  atomic.Pointer[modelReadinessSnapshot]
+	calls    map[uint64]*modelAuthCall
+	nextAuth uint64
+	key      modelGenerationKey
+}
+
+type modelAuthCall struct {
+	done chan struct{}
+}
+
+type metadataCall struct {
+	done   chan struct{}
+	result modelMetadataResult
+}
+
 type modelRuntime struct {
 	store            *modelStore
 	do               modelHTTPDo
 	storeError       modelErrorCode
-	mu               sync.Mutex
-	snapshots        map[string]modelReadinessSnapshot
+	configGeneration atomic.Uint64
+	authSlots        sync.Map
+	metadataMu       sync.Mutex
+	metadataCall     *metadataCall
 	metadataCache    *metadataCacheV1
 	metadataResult   *modelMetadataResult
-	configGeneration atomic.Uint64
 }
 
 var activeModelRuntime atomic.Pointer[modelRuntime]
 
 func newModelRuntime(store *modelStore, do modelHTTPDo) *modelRuntime {
-	runtime := &modelRuntime{
-		store:     store,
-		do:        do,
-		snapshots: make(map[string]modelReadinessSnapshot),
-	}
+	runtime := &modelRuntime{store: store, do: do}
 	if store == nil {
 		runtime.storeError = modelErrorCacheRead
 		return runtime
@@ -173,56 +191,72 @@ func currentModelRuntime() *modelRuntime {
 	return activeModelRuntime.Load()
 }
 
-func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSnapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *modelRuntime) authSlot(authID string) *modelAuthSlot {
+	candidate := &modelAuthSlot{calls: make(map[uint64]*modelAuthCall)}
+	loaded, _ := r.authSlots.LoadOrStore(authID, candidate)
+	return loaded.(*modelAuthSlot)
+}
 
+func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSnapshot {
+	slot := r.authSlot(req.AuthID)
 	sa, err := parseStored(req.StorageJSON)
+	if err == nil {
+		_, err = workBuddyRealmFromAccessToken(sa.Auth.AccessToken)
+	}
+	var identity modelAuthIdentity
+	if err == nil {
+		identity, err = modelAuthIdentityFor(req.AuthID, sa)
+	}
 	if err != nil {
-		return r.publishLocked(req.AuthID, modelReadinessSnapshot{
-			State:          modelFailed,
-			ErrorCode:      modelErrorAuthInvalid,
-			Models:         []pluginapi.ModelInfo{},
-			ModelSource:    modelSourceNone,
-			MetadataSource: modelSourceNone,
+		return storeModelReadinessSnapshot(slot, modelReadinessSnapshot{
+			State:            modelFailed,
+			ModelSource:      modelSourceNone,
+			MetadataSource:   modelSourceNone,
+			ErrorCode:        modelErrorAuthInvalid,
+			Models:           []pluginapi.ModelInfo{},
+			configGeneration: r.configGeneration.Load(),
 		})
 	}
-	if _, err := workBuddyRealmFromAccessToken(sa.Auth.AccessToken); err != nil {
-		return r.publishLocked(req.AuthID, modelReadinessSnapshot{
-			State:          modelFailed,
-			ModelSource:    modelSourceNone,
-			MetadataSource: modelSourceNone,
-			ErrorCode:      modelErrorAuthInvalid,
-			Models:         []pluginapi.ModelInfo{},
-		})
-	}
-	identity, err := modelAuthIdentityFor(req.AuthID, sa)
-	if err != nil {
-		return r.publishLocked(req.AuthID, modelReadinessSnapshot{
-			State:          modelFailed,
-			ModelSource:    modelSourceNone,
-			MetadataSource: modelSourceNone,
-			ErrorCode:      modelErrorAuthInvalid,
-			Models:         []pluginapi.ModelInfo{},
-		})
-	}
+
 	identitySHA256 := identity.sha256()
-	tokenSHA256 := sha256.Sum256([]byte(sa.Auth.AccessToken))
+	key := modelGenerationKey{
+		TokenSHA256:    sha256.Sum256([]byte(sa.Auth.AccessToken)),
+		IdentitySHA256: identitySHA256,
+	}
+	slot.mu.Lock()
+	if slot.key != key {
+		slot.key = key
+		slot.nextAuth++
+	}
+	authGeneration := slot.nextAuth
+	if current := slot.current.Load(); current != nil && current.authGeneration == authGeneration && current.State != modelLoading {
+		result := cloneModelReadinessSnapshot(*current)
+		slot.mu.Unlock()
+		return result
+	}
+	if call := slot.calls[authGeneration]; call != nil {
+		slot.mu.Unlock()
+		<-call.done
+		return r.snapshotForAuthID(req.AuthID)
+	}
+	call := &modelAuthCall{done: make(chan struct{})}
+	slot.calls[authGeneration] = call
 	snapshot := modelReadinessSnapshot{
 		State:            modelLoading,
 		ModelSource:      modelSourceNone,
 		MetadataSource:   modelSourceNone,
 		Models:           []pluginapi.ModelInfo{},
 		configGeneration: r.configGeneration.Load(),
-		authGeneration:   binary.BigEndian.Uint64(tokenSHA256[:]),
+		authGeneration:   authGeneration,
 		identitySHA256:   identitySHA256,
 	}
-	r.publishLocked(req.AuthID, snapshot)
+	storeModelReadinessSnapshot(slot, snapshot)
+	slot.mu.Unlock()
 
 	if r.storeError != modelErrorNone || r.store == nil {
 		snapshot.State = modelFailed
 		snapshot.ErrorCode = modelErrorCacheRead
-		return r.publishLocked(req.AuthID, snapshot)
+		return r.finishAuthCall(slot, authGeneration, call, snapshot)
 	}
 
 	cachedModels, cachedModelsOK, modelCacheErr := r.store.loadModels(identitySHA256)
@@ -251,52 +285,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 		}
 	}
 	modelSelection := selectModelCatalog(freshModels, freshModelsOK, cachedModels, cachedModelsOK, modelFailure)
-
-	metadata := r.metadataResult
-	if metadata == nil || !metadata.ok {
-		var cachedMetadata metadataCacheV1
-		cachedMetadataOK := r.metadataCache != nil
-		if cachedMetadataOK {
-			cachedMetadata = *r.metadataCache
-		}
-
-		var freshMetadata metadataCacheV1
-		freshMetadataOK := false
-		metadataFailure := modelErrorNone
-		fetched, err := fetchModelsDevMetadata(cachedMetadata.ETag, req.HostCallbackID, r.do)
-		if err != nil {
-			metadataFailure = modelsDevModelErrorCode(err)
-		} else if fetched.NotModified {
-			if cachedMetadataOK {
-				freshMetadata = cachedMetadata
-				freshMetadataOK = true
-			} else {
-				metadataFailure = modelErrorModelsDevSchema
-			}
-		} else {
-			freshMetadata = metadataCacheV1{
-				SchemaVersion: modelCacheSchemaVersion,
-				ETag:          fetched.ETag,
-				FetchedAt:     time.Now().UTC(),
-				Records:       fetched.Records,
-			}
-			if err := r.store.saveMetadata(freshMetadata); err != nil {
-				metadataFailure = modelErrorCacheWrite
-				if metadata != nil && metadata.errorCode == modelErrorCacheRead {
-					metadataFailure = modelErrorCacheRead
-				}
-			} else {
-				freshMetadataOK = true
-				r.metadataCache = &freshMetadata
-			}
-		}
-
-		selected := selectMetadata(freshMetadata, freshMetadataOK, cachedMetadata, cachedMetadataOK, metadataFailure)
-		metadata = &selected
-		if selected.ok {
-			r.metadataResult = metadata
-		}
-	}
+	metadata := r.metadataForAuth(req.HostCallbackID)
 
 	snapshot.ModelSource = modelSelection.source
 	if modelSelection.ok {
@@ -312,7 +301,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	}
 	if !modelSelection.ok || !metadata.ok {
 		snapshot.State = modelFailed
-		return r.publishLocked(req.AuthID, snapshot)
+		return r.finishAuthCall(slot, authGeneration, call, snapshot)
 	}
 
 	models := make([]pluginapi.ModelInfo, len(modelSelection.cache.Models))
@@ -326,14 +315,98 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	} else {
 		snapshot.State = modelStale
 	}
-	return r.publishLocked(req.AuthID, snapshot)
+	return r.finishAuthCall(slot, authGeneration, call, snapshot)
+}
+
+func (r *modelRuntime) finishAuthCall(slot *modelAuthSlot, authGeneration uint64, call *modelAuthCall, snapshot modelReadinessSnapshot) modelReadinessSnapshot {
+	slot.mu.Lock()
+	result := storeModelReadinessSnapshot(slot, snapshot)
+	close(call.done)
+	if slot.calls[authGeneration] == call {
+		delete(slot.calls, authGeneration)
+	}
+	slot.mu.Unlock()
+	return result
+}
+
+func (r *modelRuntime) metadataForAuth(callbackID string) modelMetadataResult {
+	r.metadataMu.Lock()
+	if r.metadataResult != nil && r.metadataResult.ok {
+		result := *r.metadataResult
+		r.metadataMu.Unlock()
+		return result
+	}
+	if call := r.metadataCall; call != nil {
+		r.metadataMu.Unlock()
+		<-call.done
+		return call.result
+	}
+
+	call := &metadataCall{done: make(chan struct{})}
+	r.metadataCall = call
+	var cached metadataCacheV1
+	cachedOK := r.metadataCache != nil
+	if cachedOK {
+		cached = *r.metadataCache
+	}
+	cacheReadFailed := r.metadataResult != nil && r.metadataResult.errorCode == modelErrorCacheRead
+	r.metadataMu.Unlock()
+
+	var fresh metadataCacheV1
+	freshOK := false
+	failure := modelErrorNone
+	fetched, err := fetchModelsDevMetadata(cached.ETag, callbackID, r.do)
+	if err != nil {
+		failure = modelsDevModelErrorCode(err)
+	} else if fetched.NotModified {
+		if cachedOK {
+			fresh = cached
+			freshOK = true
+		} else {
+			failure = modelErrorModelsDevSchema
+		}
+	} else {
+		fresh = metadataCacheV1{
+			SchemaVersion: modelCacheSchemaVersion,
+			ETag:          fetched.ETag,
+			FetchedAt:     time.Now().UTC(),
+			Records:       fetched.Records,
+		}
+		if err := r.store.saveMetadata(fresh); err != nil {
+			failure = modelErrorCacheWrite
+			if cacheReadFailed {
+				failure = modelErrorCacheRead
+			}
+		} else {
+			freshOK = true
+		}
+	}
+	selected := selectMetadata(fresh, freshOK, cached, cachedOK, failure)
+
+	r.metadataMu.Lock()
+	call.result = selected
+	if selected.ok {
+		settled := selected
+		cache := selected.cache
+		r.metadataResult = &settled
+		r.metadataCache = &cache
+	} else if cacheReadFailed {
+		failed := modelMetadataResult{source: modelSourceNone, errorCode: modelErrorCacheRead}
+		r.metadataResult = &failed
+	} else {
+		r.metadataResult = nil
+	}
+	close(call.done)
+	if r.metadataCall == call {
+		r.metadataCall = nil
+	}
+	r.metadataMu.Unlock()
+	return selected
 }
 
 func (r *modelRuntime) snapshotForAuthID(authID string) modelReadinessSnapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if snapshot, ok := r.snapshots[authID]; ok {
-		return cloneModelReadinessSnapshot(snapshot)
+	if snapshot := r.authSlot(authID).current.Load(); snapshot != nil {
+		return cloneModelReadinessSnapshot(*snapshot)
 	}
 	return modelReadinessSnapshot{
 		State:            modelNotStarted,
@@ -345,8 +418,8 @@ func (r *modelRuntime) snapshotForAuthID(authID string) modelReadinessSnapshot {
 }
 
 func (r *modelRuntime) metadataStatus() modelMetadataStatus {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.metadataMu.Lock()
+	defer r.metadataMu.Unlock()
 	if r.metadataResult != nil {
 		return modelMetadataStatus{
 			Source:    r.metadataResult.source,
@@ -365,20 +438,19 @@ func (r *modelRuntime) advanceConfigGeneration() uint64 {
 }
 
 func (r *modelRuntime) markAuthNotStarted(authID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.snapshots[authID] = modelReadinessSnapshot{
+	storeModelReadinessSnapshot(r.authSlot(authID), modelReadinessSnapshot{
 		State:            modelNotStarted,
 		ModelSource:      modelSourceNone,
 		MetadataSource:   modelSourceNone,
 		Models:           []pluginapi.ModelInfo{},
 		configGeneration: r.configGeneration.Load(),
-	}
+	})
 }
 
-func (r *modelRuntime) publishLocked(authID string, snapshot modelReadinessSnapshot) modelReadinessSnapshot {
-	r.snapshots[authID] = cloneModelReadinessSnapshot(snapshot)
-	return snapshot
+func storeModelReadinessSnapshot(slot *modelAuthSlot, snapshot modelReadinessSnapshot) modelReadinessSnapshot {
+	published := cloneModelReadinessSnapshot(snapshot)
+	slot.current.Store(&published)
+	return cloneModelReadinessSnapshot(published)
 }
 
 func cloneModelInfo(info pluginapi.ModelInfo) pluginapi.ModelInfo {

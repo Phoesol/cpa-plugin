@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,34 +220,61 @@ func TestModelRuntimeFreshBootstrapMetadataFutureSchemaIsCacheRead(t *testing.T)
 	}
 }
 
-func TestModelRuntimeFreshBootstrapSnapshotsAreReadOnly(t *testing.T) {
-	runtime := &modelRuntime{snapshots: map[string]modelReadinessSnapshot{
-		"auth-copy": {
-			State: modelReady,
-			Models: []pluginapi.ModelInfo{
-				{
-					ID:                         "serve-alpha",
-					SupportedGenerationMethods: []string{"chat"},
-					SupportedParameters:        []string{"temperature"},
-					SupportedInputModalities:   []string{"text"},
-					SupportedOutputModalities:  []string{"text"},
-					Thinking:                   &pluginapi.ThinkingSupport{Levels: []string{"low"}},
-				},
-			},
-		},
-	}}
+func TestModelRuntimeSnapshotImmutable(t *testing.T) {
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if callbackID != "callback-copy" {
+			t.Fatalf("callback ID = %q", callbackID)
+		}
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		case "models.dev":
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha","modalities":{"input":["text"],"output":["text"]}}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	published := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-copy", StorageJSON: mustJSON(syntheticStoredAuth(t, workBuddyRealmCN))},
+		HostCallbackID:   "callback-copy",
+	})
+	if published.State != modelReady || len(published.Models) != 1 {
+		t.Fatalf("published snapshot = %#v", published)
+	}
 
 	first := runtime.snapshotForAuthID("auth-copy")
+	first.Models[0].ID = "changed"
 	first.Models[0].SupportedGenerationMethods[0] = "changed"
-	first.Models[0].SupportedParameters[0] = "changed"
+	first.Models[0].SupportedParameters = []string{"changed"}
 	first.Models[0].SupportedInputModalities[0] = "changed"
 	first.Models[0].SupportedOutputModalities[0] = "changed"
-	first.Models[0].Thinking.Levels[0] = "changed"
+	first.Models[0].Thinking = &pluginapi.ThinkingSupport{Levels: []string{"changed"}}
 
 	second := runtime.snapshotForAuthID("auth-copy")
 	model := second.Models[0]
-	if model.SupportedGenerationMethods[0] != "chat" || model.SupportedParameters[0] != "temperature" || model.SupportedInputModalities[0] != "text" || model.SupportedOutputModalities[0] != "text" || model.Thinking.Levels[0] != "low" {
+	if model.ID != "serve-alpha" || model.SupportedGenerationMethods[0] != "chat" || model.SupportedParameters != nil || model.SupportedInputModalities[0] != "text" || model.SupportedOutputModalities[0] != "text" || model.Thinking != nil {
 		t.Fatalf("published snapshot was mutated: %#v", second)
+	}
+
+	nested := modelReadinessSnapshot{Models: []pluginapi.ModelInfo{{
+		SupportedGenerationMethods: []string{"chat"},
+		SupportedParameters:        []string{"temperature"},
+		SupportedInputModalities:   []string{"text"},
+		SupportedOutputModalities:  []string{"text"},
+		Thinking:                   &pluginapi.ThinkingSupport{Levels: []string{"low"}},
+	}}}
+	runtime.authSlot("auth-nested").current.Store(&nested)
+	nestedResult := runtime.snapshotForAuthID("auth-nested")
+	nestedResult.Models[0].SupportedGenerationMethods[0] = "changed"
+	nestedResult.Models[0].SupportedParameters[0] = "changed"
+	nestedResult.Models[0].SupportedInputModalities[0] = "changed"
+	nestedResult.Models[0].SupportedOutputModalities[0] = "changed"
+	nestedResult.Models[0].Thinking.Levels[0] = "changed"
+	unchanged := runtime.snapshotForAuthID("auth-nested").Models[0]
+	if unchanged.SupportedGenerationMethods[0] != "chat" || unchanged.SupportedParameters[0] != "temperature" || unchanged.SupportedInputModalities[0] != "text" || unchanged.SupportedOutputModalities[0] != "text" || unchanged.Thinking.Levels[0] != "low" {
+		t.Fatalf("nested model info was not deeply cloned: %#v", unchanged)
 	}
 
 	if got := runtime.advanceConfigGeneration(); got != 1 {
@@ -254,6 +284,344 @@ func TestModelRuntimeFreshBootstrapSnapshotsAreReadOnly(t *testing.T) {
 	marked := runtime.snapshotForAuthID("auth-copy")
 	if marked.State != modelNotStarted || marked.executable() || marked.Models == nil || len(marked.Models) != 0 {
 		t.Fatalf("marked snapshot = %#v", marked)
+	}
+
+	t.Run("host alias and exclusion config stay response-local", func(t *testing.T) {
+		root := t.TempDir()
+		store := newModelStore(root)
+		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+			if callbackID != "callback-config" {
+				t.Fatalf("callback ID = %q", callbackID)
+			}
+			switch req.URL.Host {
+			case "copilot.tencent.com":
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+			case "models.dev":
+				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+			default:
+				t.Fatalf("unexpected request %s", req.URL)
+				return nil, nil
+			}
+		}
+		sa := syntheticStoredAuth(t, workBuddyRealmCN)
+		runtime := newModelRuntime(store, do)
+		got := runtime.ensureForAuth(authModelRequestWire{
+			AuthModelRequest: pluginapi.AuthModelRequest{
+				AuthID:      "auth-config",
+				StorageJSON: mustJSON(sa),
+				Host: pluginapi.HostConfigSummary{
+					OAuthModelAlias: map[string][]pluginapi.ModelAlias{providerName: {{Name: "serve-alpha", Alias: "secret-alias"}}},
+					ExcludedModels:  map[string][]string{providerName: {"serve-alpha", "secret-excluded"}},
+				},
+			},
+			HostCallbackID: "callback-config",
+		})
+		if got.State != modelReady || len(got.Models) != 1 || got.Models[0].ID != "serve-alpha" {
+			t.Fatalf("snapshot = %#v", got)
+		}
+		identity, err := modelAuthIdentityFor("auth-config", sa)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cacheRaw, err := os.ReadFile(filepath.Join(root, "models", identity.sha256()+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshotRaw, err := json.Marshal(runtime.snapshotForAuthID("auth-config"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, raw := range [][]byte{cacheRaw, snapshotRaw} {
+			for _, forbidden := range []string{"secret-alias", "secret-excluded"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("cached/shared model state contains host config %q: %s", forbidden, raw)
+				}
+			}
+		}
+	})
+}
+
+func TestModelRuntimeSameAuthSingleflight(t *testing.T) {
+	var workBuddyCalls atomic.Int32
+	var metadataCalls atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			if workBuddyCalls.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		case "models.dev":
+			metadataCalls.Add(1)
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	req := authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-one", StorageJSON: mustJSON(syntheticStoredAuth(t, workBuddyRealmCN))}}
+	results := make(chan modelReadinessSnapshot, 32)
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- runtime.ensureForAuth(req)
+		}()
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	close(results)
+	for result := range results {
+		if result.State != modelReady {
+			t.Fatalf("result = %#v", result)
+		}
+	}
+	if workBuddyCalls.Load() != 1 || metadataCalls.Load() != 1 {
+		t.Fatalf("calls: workbuddy=%d metadata=%d", workBuddyCalls.Load(), metadataCalls.Load())
+	}
+}
+
+func TestModelRuntimeDifferentAuthIsolation(t *testing.T) {
+	var cnCalls atomic.Int32
+	var globalCalls atomic.Int32
+	cnStarted := make(chan struct{})
+	globalStarted := make(chan struct{})
+	cnRelease := make(chan struct{})
+	globalRelease := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			if cnCalls.Add(1) == 1 {
+				close(cnStarted)
+			}
+			<-cnRelease
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["cn-model"]}]}}`)}, nil
+		case "www.workbuddy.ai":
+			if globalCalls.Add(1) == 1 {
+				close(globalStarted)
+			}
+			<-globalRelease
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["global-model"]}]}}`)}, nil
+		case "models.dev":
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/cn-model":{"id":"cn-model"},"vendor/global-model":{"id":"global-model"}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	cnAuth := syntheticStoredAuth(t, workBuddyRealmCN)
+	cnAuth.Account.UID = "uid-cn"
+	cnAuth.Account.EnterpriseID = "enterprise-cn"
+	globalAuth := syntheticStoredAuth(t, workBuddyRealmGlobal)
+	globalAuth.Account.UID = "uid-global"
+	globalAuth.Account.EnterpriseID = "enterprise-global"
+	cnResult := make(chan modelReadinessSnapshot, 1)
+	globalResult := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		cnResult <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-cn", StorageJSON: mustJSON(cnAuth)}})
+	}()
+	go func() {
+		globalResult <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-global", StorageJSON: mustJSON(globalAuth)}})
+	}()
+
+	bothStarted := make(chan struct{})
+	go func() {
+		<-cnStarted
+		<-globalStarted
+		close(bothStarted)
+	}()
+	concurrent := true
+	select {
+	case <-bothStarted:
+	case <-time.After(2 * time.Second):
+		concurrent = false
+	}
+	close(cnRelease)
+	close(globalRelease)
+	gotCN := <-cnResult
+	gotGlobal := <-globalResult
+	if !concurrent {
+		t.Fatal("different auth WorkBuddy requests were serialized")
+	}
+	if cnCalls.Load() != 1 || globalCalls.Load() != 1 {
+		t.Fatalf("WorkBuddy calls: cn=%d global=%d", cnCalls.Load(), globalCalls.Load())
+	}
+	if gotCN.State != modelReady || len(gotCN.Models) != 1 || gotCN.Models[0].ID != "cn-model" {
+		t.Fatalf("CN snapshot = %#v", gotCN)
+	}
+	if gotGlobal.State != modelReady || len(gotGlobal.Models) != 1 || gotGlobal.Models[0].ID != "global-model" {
+		t.Fatalf("Global snapshot = %#v", gotGlobal)
+	}
+}
+
+func TestModelRuntimeMetadataSingleflight(t *testing.T) {
+	var workBuddyCalls atomic.Int32
+	var metadataCalls atomic.Int32
+	workBuddyStarted := make(chan struct{})
+	releaseWorkBuddy := make(chan struct{})
+	metadataStarted := make(chan struct{})
+	secondMetadataStarted := make(chan struct{})
+	releaseMetadata := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			if workBuddyCalls.Add(1) == 2 {
+				close(workBuddyStarted)
+			}
+			<-releaseWorkBuddy
+			id := "model-one"
+			if req.Header.Get("X-User-Id") == "uid-two" {
+				id = "model-two"
+			}
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(fmt.Sprintf(`{"code":0,"data":{"agents":[{"name":"cli","models":[%q]}]}}`, id))}, nil
+		case "models.dev":
+			call := metadataCalls.Add(1)
+			if call == 1 {
+				close(metadataStarted)
+			} else if call == 2 {
+				close(secondMetadataStarted)
+			}
+			<-releaseMetadata
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/model-one":{"id":"model-one"},"vendor/model-two":{"id":"model-two"}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	firstAuth := syntheticStoredAuth(t, workBuddyRealmCN)
+	firstAuth.Account.UID = "uid-one"
+	firstAuth.Account.EnterpriseID = "enterprise-one"
+	secondAuth := syntheticStoredAuth(t, workBuddyRealmCN)
+	secondAuth.Account.UID = "uid-two"
+	secondAuth.Account.EnterpriseID = "enterprise-two"
+	start := make(chan struct{})
+	results := make(chan modelReadinessSnapshot, 2)
+	var wg sync.WaitGroup
+	for _, req := range []authModelRequestWire{
+		{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-one", StorageJSON: mustJSON(firstAuth)}},
+		{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-two", StorageJSON: mustJSON(secondAuth)}},
+	} {
+		req := req
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- runtime.ensureForAuth(req)
+		}()
+	}
+	close(start)
+	concurrentAuths := true
+	select {
+	case <-workBuddyStarted:
+	case <-time.After(2 * time.Second):
+		concurrentAuths = false
+	}
+	close(releaseWorkBuddy)
+	<-metadataStarted
+	select {
+	case <-secondMetadataStarted:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseMetadata)
+	wg.Wait()
+	close(results)
+	if !concurrentAuths {
+		t.Fatal("auth bootstraps were serialized before metadata refresh")
+	}
+	for result := range results {
+		if result.State != modelReady {
+			t.Fatalf("result = %#v", result)
+		}
+	}
+	if metadataCalls.Load() != 1 {
+		t.Fatalf("models.dev calls = %d, want 1", metadataCalls.Load())
+	}
+}
+
+func TestModelRuntimeConcurrentReaders(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			close(started)
+			<-release
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		case "models.dev":
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	bootstrapDone := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		bootstrapDone <- runtime.ensureForAuth(authModelRequestWire{
+			AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-readers", StorageJSON: mustJSON(syntheticStoredAuth(t, workBuddyRealmCN))},
+		})
+	}()
+	<-started
+
+	const readerCount = 32
+	var readersStarted atomic.Int32
+	var invalidState atomic.Bool
+	allReadersStarted := make(chan struct{})
+	stopReaders := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < readerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			first := true
+			for {
+				snapshot := runtime.snapshotForAuthID("auth-readers")
+				if snapshot.State != modelLoading && snapshot.State != modelReady {
+					invalidState.Store(true)
+				}
+				if first {
+					first = false
+					if readersStarted.Add(1) == readerCount {
+						close(allReadersStarted)
+					}
+				}
+				select {
+				case <-stopReaders:
+					return
+				default:
+				}
+			}
+		}()
+	}
+	lockFree := true
+	select {
+	case <-allReadersStarted:
+	case <-time.After(2 * time.Second):
+		lockFree = false
+	}
+	close(release)
+	result := <-bootstrapDone
+	close(stopReaders)
+	wg.Wait()
+	if !lockFree {
+		t.Fatal("snapshot readers blocked on bootstrap")
+	}
+	if invalidState.Load() {
+		t.Fatal("snapshot reader observed an invalid state")
+	}
+	if result.State != modelReady {
+		t.Fatalf("bootstrap result = %#v", result)
 	}
 }
 
