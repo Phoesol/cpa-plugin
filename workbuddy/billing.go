@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+const userResourceConcurrency = 4
+
+var userResourceSlots = make(chan struct{}, userResourceConcurrency)
+
+func acquireUserResourceSlot() func() {
+	userResourceSlots <- struct{}{}
+	return func() { <-userResourceSlots }
+}
+
 // isGlobalDomain reports whether the domain belongs to the international
 // (www.workbuddy.ai) WorkBuddy service.  The CN service uses
 // www.codebuddy.cn; Global uses www.workbuddy.ai.
@@ -276,6 +285,9 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 }
 
 func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsSummary, error) {
+	release := acquireUserResourceSlot()
+	defer release()
+
 	now := time.Now()
 	// Status 0=active, 3=exhausted-but-still-listed.
 	const pageSize = 100
