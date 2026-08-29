@@ -196,6 +196,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
     <button type="button" class="ftag" data-region="global" onclick="filterRegion('global',this)">Global <span class="cnt" id="cntGlobal">0</span></button>
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
+    <input id="accountSearch" class="field-input" type="search" placeholder="搜索昵称、标签、文件名或 UID" oninput="setAccountSearch(this.value)" aria-label="搜索账号">
+    <button type="button" class="ftag" id="remainSort" onclick="cycleRemainSort(this)">剩余积分：原始顺序</button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
@@ -210,6 +212,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <div class="modal-bd">
       <p class="hint">支持 nested <code>{"auth":{...},"account":{...}}</code> 或 flat <code>{"accessToken":...}</code>。落盘为 <code>workbuddy-&lt;uid&gt;.json</code>。</p>
       <textarea id="importRaw" rows="8" placeholder='粘贴 WorkBuddy / CodeBuddy 凭证 JSON'></textarea>
+      <label class="hint" for="importFiles">或选择 JSON 文件，每个最多 2 MiB</label>
+      <input id="importFiles" type="file" multiple accept=".json,application/json">
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">取消</button>
@@ -402,6 +406,8 @@ function card(a){
   </div>`;
 }
 let currentFilter="all";
+let accountSearch="";
+let sortDirection="original";
 let lastAccounts=[];
 let activeAuthId="";
 let authFailCount=0;
@@ -442,22 +448,18 @@ function lazyLoadCredits(accounts){
       });
   });
 }
-function updateOneCard(a){
-  const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
-  if(!el) return;
-  // Build new card HTML and replace.
-  const tmp=document.createElement('div');
-  tmp.innerHTML=card(a);
-  if(tmp.firstChild){
-    const newCard=tmp.firstChild;
-    el.replaceWith(newCard);
-    bindCardActions(newCard);
-  }
-  filterRegion(currentFilter, null);
+function renderAccountCards(){
+  const g=document.getElementById("grid");
+  if(!g) return;
+  g.innerHTML=accountsForView(lastAccounts).map(card).join("");
+  bindCardActions(g);
+}
+function updateOneCard(){
+  renderAccountCards();
+  renderSummary(lastAccounts);
   // Update summary + re-check selection when all done.
   const all=lastAccounts||[];
   if(all.every(x=>x.credits||x.error||x.disabled)){
-    renderSummary(all);
     // After all lazy credits loaded, the backend cache now has fresh exhausted
     // flags. Re-fetch /accounts (light, cache-only) so ensureDefaultActiveAuth
     // can pick the correct card — first load may have selected an account that
@@ -474,12 +476,8 @@ function updateOneCard(a){
           all[idx].exhausted=!!fa.exhausted;
         }
       });
-      const g=document.getElementById("grid");
-      if(g){
-        g.innerHTML=accountsForFilter(all).map(card).join("");
-        bindCardActions(g);
-      }
-      filterRegion(currentFilter, null);
+      renderAccountCards();
+      renderSummary(all);
     }).catch(()=>{});
   }
 }
@@ -492,14 +490,7 @@ function filterRegion(region, btn){
       if(b.dataset.region===currentFilter) b.classList.add("active");
     });
   }
-  document.querySelectorAll("#grid .card").forEach(c=>{
-    const r=c.dataset.region||"cn";
-    let show=true;
-    if(currentFilter==="all") show=true;
-    else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
-    else show=r===currentFilter;
-    c.style.display=show?"":"none";
-  });
+  renderAccountCards();
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
@@ -524,6 +515,25 @@ function accountsForFilter(accounts){
     return list.filter(a=>a.exhausted||(a.credits&&a.credits.total_remain===0&&(a.credits.total_used>0||(a.credits.packages&&a.credits.packages.length))));
   }
   return list.filter(a=>(a.region||"cn")===currentFilter);
+}
+function accountsForView(accounts){
+  const query=accountSearch.trim().toLowerCase();
+  const view=accountsForFilter(accounts).filter(a=>!query||[a.nickname,a.label,a.name,a.uid].some(v=>String(v||"").toLowerCase().includes(query)));
+  if(sortDirection==="original") return view.slice();
+  return view.slice().sort((a,b)=>{
+    const remain=a=>Number((a.credits&&a.credits.total_remain)||0)||0;
+    const diff=remain(a)-remain(b);
+    return sortDirection==="desc"?-diff:diff;
+  });
+}
+function setAccountSearch(value){
+  accountSearch=value||"";
+  renderAccountCards();
+}
+function cycleRemainSort(btn){
+  sortDirection=sortDirection==="original"?"desc":(sortDirection==="desc"?"asc":"original");
+  btn.textContent="剩余积分："+(sortDirection==="desc"?"降序":(sortDirection==="asc"?"升序":"原始顺序"));
+  renderAccountCards();
 }
 function creditOf(a){
   const cr=a&&a.credits;
@@ -681,8 +691,6 @@ async function load(force, btn){
       if(force) toast("数据已刷新", "warn", "暂无 WorkBuddy 账号");
       return true;
     }
-    g.innerHTML=accounts.map(card).join("");
-    bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
     // Lazy-load credits for cards that don't have them yet.
@@ -768,11 +776,6 @@ async function selectAuth(idx, btn){
     toast("已选用","ok",who+" · "+region);
     // Re-render from local state for instant feedback, then soft reload
     (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
-    const g=document.getElementById("grid");
-    if(g){
-      g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
-      bindCardActions(g);
-    }
     filterRegion(currentFilter, null);
   }catch(e){
     toast("选用失败","err",e.message||String(e));
@@ -962,22 +965,41 @@ function closeImportModal(){
 function onImportMaskClick(e){
   if(e.target===document.getElementById("importModal")) closeImportModal();
 }
+const MAX_IMPORT_FILE_BYTES=2*1024*1024;
+async function importOneCredential(raw){
+  let payload={raw};
+  try{payload={json:JSON.parse(raw)}}catch(_){}
+  return api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+}
 async function importAuth(btn){
+  const imports=[];
   const raw=(document.getElementById("importRaw").value||"").trim();
-  if(!raw){toast("请粘贴凭证 JSON","warn");return}
+  const files=document.getElementById("importFiles");
+  if(raw) imports.push({name:"粘贴内容",raw});
+  for(const file of Array.from(files.files||[])){
+    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name:file.name,error:"超过 2 MiB"});continue}
+    try{imports.push({name:file.name,raw:await file.text()})}
+    catch(_){imports.push({name:file.name,error:"读取失败"})}
+  }
+  if(!imports.length){toast("请选择文件或粘贴凭证 JSON","warn");return}
   busy(btn,true);
   try{
-    let payload={raw};
-    try{payload={json:JSON.parse(raw)}}catch(_){}
-    const d=await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(d.success){
-      toast("导入成功","ok",(d.nickname||d.uid||"")+ " → "+(d.file||d.name||""));
-      document.getElementById("importRaw").value="";
-      closeImportModal();
-      load(true);
-    }else toast("导入失败","err",d.error||"unknown");
-  }catch(e){toast("导入请求失败","err",e.message)}
-  busy(btn,false);
+    const results=[];
+    for(const item of imports){
+      if(item.error){results.push({name:item.name,error:item.error});continue}
+      try{
+        const d=await importOneCredential(item.raw);
+        results.push({name:item.name,error:d.success?"":"导入失败"});
+      }catch(_){results.push({name:item.name,error:"请求失败"})}
+    }
+    const ok=results.filter(r=>!r.error).length;
+    const fail=results.length-ok;
+    const detail=results.map(r=>r.name+"："+(r.error||"成功")).join("；");
+    document.getElementById("importRaw").value="";
+    files.value="";
+    toast("导入完成",fail?"warn":"ok",ok+" 成功 / "+fail+" 失败 · "+detail);
+    if(ok){closeImportModal();await load(true)}
+  }finally{busy(btn,false)}
 }
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{

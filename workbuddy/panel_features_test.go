@@ -64,6 +64,68 @@ func TestPanelEditsDesensitizeThroughGenericPluginConfigAPI(t *testing.T) {
 	}
 }
 
+func TestPanelSupportsBoundedSequentialFileImport(t *testing.T) {
+	html := string(panelHTML)
+	for _, want := range []string{
+		`id="importFiles"`, `type="file"`, `multiple`, `accept=".json,application/json"`,
+		`const MAX_IMPORT_FILE_BYTES=2*1024*1024`, `file.size>MAX_IMPORT_FILE_BYTES`,
+		`error:"超过 2 MiB"`, `await file.text()`, `error:"读取失败"`, `if(!imports.length)`,
+		`async function importOneCredential(raw)`, `return api("/import"`, `for(const item of imports)`,
+		`await importOneCredential(item.raw)`, `const results=[]`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("panel missing %q", want)
+		}
+	}
+	if strings.Contains(html, `localStorage.setItem("workbuddy-import`) {
+		t.Fatal("credential import persisted in localStorage")
+	}
+}
+
+func TestPanelImportSummaryDoesNotIncludeCredentialBearingErrors(t *testing.T) {
+	html := string(panelHTML)
+	start := strings.Index(html, "async function importAuth(btn){")
+	if start < 0 {
+		t.Fatal("importAuth function not found")
+	}
+	end := strings.Index(html[start:], "\ndocument.getElementById(\"keyInput\")")
+	if end < 0 {
+		t.Fatal("importAuth function end not found")
+	}
+	body := html[start : start+end]
+	for _, forbidden := range []string{`d.error`, `e.message`} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("import summary includes server error text %q", forbidden)
+		}
+	}
+}
+
+func TestPanelSearchesAndSortsVisibleAccounts(t *testing.T) {
+	html := string(panelHTML)
+	for _, want := range []string{
+		`id="accountSearch"`, `let accountSearch=""`, `let sortDirection="original"`,
+		`function accountsForView(accounts)`, `nickname`, `label`, `name`, `uid`,
+		`const view=accountsForFilter(accounts).filter(`, `return view.slice()`,
+		`return view.slice().sort(`,
+		`sortDirection=sortDirection==="original"?"desc":(sortDirection==="desc"?"asc":"original")`,
+		`accountsForView(lastAccounts).map(card).join("")`,
+		`const scoped=accountsForFilter(all);`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("panel missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`lastAccounts.sort(`,
+		`accountsForFilter(lastAccounts).map(card).join("")`,
+		`accounts.map(card).join("")`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Errorf("panel mutates or renders without search/sort: %q", forbidden)
+		}
+	}
+}
+
 func TestPanelWaitsForAsyncConfigReloadBeforeShowingSavedSettings(t *testing.T) {
 	html := strings.ReplaceAll(string(panelHTML), "\r\n", "\n")
 	for _, want := range []string{
