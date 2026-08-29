@@ -227,7 +227,7 @@ func TestRefreshCallUsesDesktopProfile(t *testing.T) {
 		"X-No-User-Id":          "true",
 		"X-Enterprise-Id":       "enterprise-1",
 		"X-Refresh-Token":       "refresh-secret",
-		"X-Auth-Refresh-Source": providerName,
+		"X-Auth-Refresh-Source": "plugin",
 	} {
 		if gotValue := got.Header.Get(key); gotValue != want {
 			t.Errorf("refresh %s = %q, want %q", key, gotValue, want)

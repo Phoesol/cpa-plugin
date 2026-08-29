@@ -194,7 +194,7 @@ func buildTokenRefreshRequest(profile oauthRequestProfile, sa *storedAuth) (*htt
 	if sa.Account.EnterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
 	}
-	req.Header.Set("X-Auth-Refresh-Source", providerName)
+	req.Header.Set("X-Auth-Refresh-Source", "plugin")
 	return req, nil
 }
 
