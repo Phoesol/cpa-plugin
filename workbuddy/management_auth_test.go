@@ -74,3 +74,73 @@ func TestManagementPanelRemainsPublicWithKeyConfigured(t *testing.T) {
 		t.Fatalf("panel status=%d body=%s", resp.StatusCode, resp.Body)
 	}
 }
+
+func TestManagementRateLimitDoesNotChargeValidKey(t *testing.T) {
+	managementAPIKeyMu.Lock()
+	oldKey := managementAPIKey
+	managementAPIKey = "secret"
+	managementAPIKeyMu.Unlock()
+	mgmtRateLimitMu.Lock()
+	oldBuckets := mgmtRateLimit
+	mgmtRateLimit = map[string]*mgmtRateEntry{}
+	mgmtRateLimitMu.Unlock()
+	t.Cleanup(func() {
+		managementAPIKeyMu.Lock()
+		managementAPIKey = oldKey
+		managementAPIKeyMu.Unlock()
+		mgmtRateLimitMu.Lock()
+		mgmtRateLimit = oldBuckets
+		mgmtRateLimitMu.Unlock()
+	})
+	base := loadedManagementBasePath() + "/plugins/" + providerName + "/not-found"
+	for i := 0; i < 6; i++ {
+		resp := managementResponseForTest(t, pluginapi.ManagementRequest{
+			Method: http.MethodPost,
+			Path:   base,
+			Headers: http.Header{
+				"Authorization": []string{"Bearer secret"},
+				"X-Real-Ip":     []string{"192.0.2.10"},
+			},
+		})
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("request %d status=%d, want 404", i+1, resp.StatusCode)
+		}
+	}
+}
+
+func TestManagementRateLimitChargesFailedKey(t *testing.T) {
+	managementAPIKeyMu.Lock()
+	oldKey := managementAPIKey
+	managementAPIKey = "secret"
+	managementAPIKeyMu.Unlock()
+	mgmtRateLimitMu.Lock()
+	oldBuckets := mgmtRateLimit
+	mgmtRateLimit = map[string]*mgmtRateEntry{}
+	mgmtRateLimitMu.Unlock()
+	t.Cleanup(func() {
+		managementAPIKeyMu.Lock()
+		managementAPIKey = oldKey
+		managementAPIKeyMu.Unlock()
+		mgmtRateLimitMu.Lock()
+		mgmtRateLimit = oldBuckets
+		mgmtRateLimitMu.Unlock()
+	})
+	base := loadedManagementBasePath() + "/plugins/" + providerName + "/not-found"
+	for i := 0; i < 6; i++ {
+		resp := managementResponseForTest(t, pluginapi.ManagementRequest{
+			Method: http.MethodPost,
+			Path:   base,
+			Headers: http.Header{
+				"Authorization": []string{"Bearer wrong"},
+				"X-Real-Ip":     []string{"192.0.2.10"},
+			},
+		})
+		want := http.StatusForbidden
+		if i == 5 {
+			want = http.StatusTooManyRequests
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("request %d status=%d, want %d", i+1, resp.StatusCode, want)
+		}
+	}
+}

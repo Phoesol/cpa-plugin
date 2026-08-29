@@ -203,16 +203,14 @@ func handleManagement(raw []byte) ([]byte, error) {
 	// configured. Static panel resources return above so the login UI remains
 	// reachable; the panel sends the Bearer key on each JSON request.
 	mutating := req.Method == http.MethodPost || mutatingManagementPath(path)
-	if mutating {
-		ip := managementClientIP(req.ManagementRequest)
-		if !allowManagementRequest(ip) {
-			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
-				"error": "rate limit exceeded, try again later",
-			}))
-		}
-	}
 	if loadedManagementKey() != "" || mutating {
 		if status, msg := checkManagementAuth(req.ManagementRequest); status != 0 {
+			ip := managementClientIP(req.ManagementRequest)
+			if !allowManagementRequest(ip) {
+				return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
+					"error": "rate limit exceeded, try again later",
+				}))
+			}
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
 	}
