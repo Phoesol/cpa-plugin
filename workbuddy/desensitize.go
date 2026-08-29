@@ -176,6 +176,138 @@ func compileDesensitizeMatcher(terms []string) (*desensitizeMatcher, error) {
 	return &desensitizeMatcher{expression: expression}, nil
 }
 
+var desensitizeUserMarkers = []string{
+	"# AGENTS.md instructions",
+	"<environment_context>",
+	"<permissions instructions>",
+	"<collaboration_mode>",
+	"<skills_instructions>",
+	"<system-reminder>",
+	"# claudeMd",
+}
+
+// applyDesensitizeInPlace changes only the prompt and tool metadata fields
+// allowed by the configured desensitization scope.
+func applyDesensitizeInPlace(obj map[string]any, cfg *featureRuntimeConfig) bool {
+	if cfg == nil || !cfg.desensitizeEnabled || cfg.matcher == nil {
+		return false
+	}
+
+	changed := false
+	if messages, ok := obj["messages"].([]any); ok {
+		for _, raw := range messages {
+			if msg, ok := raw.(map[string]any); ok && desensitizeMessageInPlace(msg, cfg) {
+				changed = true
+			}
+		}
+	}
+	if tools, ok := obj["tools"]; ok && desensitizeToolMetadataInPlace(tools, cfg) {
+		changed = true
+	}
+	return changed
+}
+
+func desensitizeMessageInPlace(msg map[string]any, cfg *featureRuntimeConfig) bool {
+	role, _ := msg["role"].(string)
+	content, ok := msg["content"]
+	if !ok {
+		return false
+	}
+
+	switch role {
+	case "system", "developer":
+		switch value := content.(type) {
+		case string:
+			return desensitizeStringField(msg, "content", value, cfg)
+		case []any:
+			return desensitizeTextBlocksInPlace(value, true, cfg)
+		}
+	case "user":
+		switch value := content.(type) {
+		case string:
+			if hasDesensitizeUserMarker(value) {
+				return desensitizeStringField(msg, "content", value, cfg)
+			}
+		case []any:
+			var text strings.Builder
+			for _, raw := range value {
+				part, ok := raw.(map[string]any)
+				if !ok || part["type"] != "text" {
+					continue
+				}
+				if value, ok := part["text"].(string); ok {
+					text.WriteString(value)
+				}
+			}
+			return desensitizeTextBlocksInPlace(value, hasDesensitizeUserMarker(text.String()), cfg)
+		}
+	}
+	return false
+}
+
+func desensitizeStringField(obj map[string]any, key, value string, cfg *featureRuntimeConfig) bool {
+	replaced := cfg.matcher.replace(value)
+	if replaced == value {
+		return false
+	}
+	obj[key] = replaced
+	return true
+}
+
+func desensitizeTextBlocksInPlace(content []any, enabled bool, cfg *featureRuntimeConfig) bool {
+	if !enabled {
+		return false
+	}
+	changed := false
+	for _, raw := range content {
+		part, ok := raw.(map[string]any)
+		if !ok || part["type"] != "text" {
+			continue
+		}
+		if text, ok := part["text"].(string); ok && desensitizeStringField(part, "text", text, cfg) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func desensitizeToolMetadataInPlace(value any, cfg *featureRuntimeConfig) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		changed := false
+		for key, value := range node {
+			if (key == "description" || key == "title") {
+				if text, ok := value.(string); ok && desensitizeStringField(node, key, text, cfg) {
+					changed = true
+				}
+				continue
+			}
+			if desensitizeToolMetadataInPlace(value, cfg) {
+				changed = true
+			}
+		}
+		return changed
+	case []any:
+		changed := false
+		for _, item := range node {
+			if desensitizeToolMetadataInPlace(item, cfg) {
+				changed = true
+			}
+		}
+		return changed
+	}
+	return false
+}
+
+func hasDesensitizeUserMarker(text string) bool {
+	for _, marker := range desensitizeUserMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *desensitizeMatcher) replace(input string) string {
 	if m == nil || m.expression == nil || input == "" {
 		return input

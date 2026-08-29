@@ -43,7 +43,10 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 4. rewriteSystem: strip blocked Claude Code template phrases + force thinking.
 	rewriteSystemInPlace(obj)
 
-	// 5. ensureSystemMessage: inject minimal system msg for Global only.
+	// 5. desensitize the configured prompt and tool metadata fields.
+	applyDesensitizeInPlace(obj, currentFeatureRuntime())
+
+	// 6. ensureSystemMessage: inject minimal system msg for Global only.
 	ensureSystemMessageInPlace(obj, sa)
 
 	out, err := json.Marshal(obj)
