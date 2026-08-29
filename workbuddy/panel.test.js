@@ -97,6 +97,15 @@ function loadPanel(overrides = {}) {
   return { context, document, elements, storage };
 }
 
+function fakeResponse(status, contentType, body) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get(name) { return name.toLowerCase() === "content-type" ? contentType : null; } },
+    async text() { return body; },
+  };
+}
+
 test("model status banner hides ready and persists non-ready states", () => {
   const { context, elements } = loadPanel();
   const statuses = [
@@ -140,4 +149,107 @@ test("model status message is rendered as text", () => {
   const banner = elements.get("modelStatus");
   assert.equal(banner.textContent, message);
   assert.equal(banner.innerHTML, "");
+});
+
+test("panel response parser never exposes response bodies", async () => {
+  const { context } = loadPanel();
+  const cases = [
+    [fakeResponse(200, "application/json", ""), "响应为空"],
+    [fakeResponse(200, "text/html; charset=utf-8", "<html>secret-token</html>"), "响应格式无效"],
+    [fakeResponse(200, "application/json", "{secret-token"), "响应 JSON 无效"],
+    [fakeResponse(503, "application/json", `{"error":"secret-token"}`), "请求失败"],
+  ];
+  for (const [response, category] of cases) {
+    await assert.rejects(
+      context.readPanelResponse(response),
+      error => error.message.includes(category) &&
+        error.message.includes("HTTP ") &&
+        !error.message.includes("secret-token"),
+    );
+  }
+  const sanitized = await context.readPanelResponse(
+    fakeResponse(200, "application/json", `{"error":"secret-token","nested":{"error":"credential-value"}}`),
+  );
+  assert.equal(sanitized.error, "请求失败");
+  assert.equal(sanitized.nested.error, "请求失败");
+  assert.doesNotMatch(JSON.stringify(sanitized), /secret-token|credential-value/);
+});
+
+test("panel transport errors use a fixed message", async () => {
+  const nativeMessage = "https://host.invalid/?key=secret-token";
+  const { context, elements, storage } = loadPanel({
+    fetch: async () => { throw new Error(nativeMessage); },
+  });
+  storage.set("workbuddy-mgmt-key", "test-key");
+  await assert.rejects(context.api("/accounts"), error => error.message === "网络请求失败");
+  await assert.rejects(context.managementAPI("/plugins/workbuddy/config"), error => error.message === "网络请求失败");
+
+  const toasts = [];
+  context.toast = (...args) => { toasts.push(args.join(" ")); };
+  await context.load(false);
+  await context.load(true, fakeElement());
+  const visible = elements.get("grid").innerHTML + toasts.join(" ");
+  assert.match(visible, /网络请求失败/);
+  assert.doesNotMatch(visible, /secret-token|host\.invalid/);
+});
+
+test("panel response auth failures clear the key without reading bodies", async () => {
+  for (const [status, message] of [[401, "management key 无效或缺失"], [403, "禁止访问 (403)"]]) {
+    let reads = 0;
+    const response = fakeResponse(status, "application/json", `{"error":"secret-token"}`);
+    response.text = async () => { reads += 1; return `{"error":"secret-token"}`; };
+    const { context, storage } = loadPanel({ fetch: async () => response });
+
+    storage.set("workbuddy-mgmt-key", "test-key");
+    await assert.rejects(context.api("/accounts"), error => error.message === message);
+    assert.equal(storage.has("workbuddy-mgmt-key"), false);
+
+    storage.set("workbuddy-mgmt-key", "test-key");
+    await assert.rejects(context.managementAPI("/plugins/workbuddy/config"), error => error.message === message);
+    assert.equal(storage.has("workbuddy-mgmt-key"), false);
+    assert.equal(reads, 0);
+  }
+});
+
+test("panel response auth failures use a fixed local cooldown", async () => {
+  let calls = 0;
+  const { context, storage } = loadPanel({
+    fetch: async () => {
+      calls += 1;
+      return fakeResponse(403, "application/json", `{"error":"secret-token"}`);
+    },
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    storage.set("workbuddy-mgmt-key", "test-key");
+    await assert.rejects(context.api("/accounts"), error => error.message === "禁止访问 (403)");
+  }
+  storage.set("workbuddy-mgmt-key", "test-key");
+  await assert.rejects(
+    context.api("/accounts"),
+    error => error.message === "认证多次失败，请检查管理密钥后 60s 再试",
+  );
+  storage.set("workbuddy-mgmt-key", "test-key");
+  await assert.rejects(
+    context.api("/accounts"),
+    error => error.message === "认证多次失败，请稍后重试（防 IP 封禁）",
+  );
+  assert.equal(calls, 3);
+});
+
+test("panel response raw dashboard errors never reach the grid or toast", async () => {
+  const originalError = "credential-value secret-token";
+  const { context, elements, storage } = loadPanel();
+  storage.set("workbuddy-mgmt-key", "test-key");
+  context.api = async () => ({
+    model_status: { state: "failed", message: "模型目录不可用" },
+    error: originalError,
+  });
+  const toasts = [];
+  context.toast = (...args) => { toasts.push(args.join(" ")); };
+
+  await context.load(false);
+  await context.load(true, fakeElement());
+  const visible = elements.get("grid").innerHTML + toasts.join(" ");
+  assert.match(visible, /请求失败/);
+  assert.doesNotMatch(visible, /credential-value|secret-token/);
 });

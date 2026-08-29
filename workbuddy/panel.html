@@ -604,12 +604,57 @@ function renderSummary(accounts){
     `}
   `;
 }
+function panelContentType(response){
+  const raw=response.headers&&response.headers.get?response.headers.get("content-type")||"":"";
+  return (raw.split(";",1)[0].trim().toLowerCase()||"unknown");
+}
+function panelHTTPError(kind,response){
+  return new Error(kind+"（HTTP "+response.status+"，"+panelContentType(response)+"）");
+}
+function sanitizePanelErrors(value){
+  if(Array.isArray(value)) return value.map(sanitizePanelErrors);
+  if(!value||typeof value!=="object") return value;
+  for(const key of Object.keys(value)){
+    if(key==="error"&&value[key]) value[key]="请求失败";
+    else value[key]=sanitizePanelErrors(value[key]);
+  }
+  return value;
+}
+async function readPanelResponse(response){
+  let text="";
+  try{text=await response.text()}catch(_){throw panelHTTPError("响应读取失败",response)}
+  if(!text) throw panelHTTPError("响应为空",response);
+  const contentType=panelContentType(response);
+  if(contentType!=="application/json"&&!contentType.endsWith("+json")){
+    throw panelHTTPError("响应格式无效",response);
+  }
+  let data;
+  try{data=JSON.parse(text)}catch(_){throw panelHTTPError("响应 JSON 无效",response)}
+  if(!response.ok) throw panelHTTPError("请求失败",response);
+  return sanitizePanelErrors(data);
+}
+function rejectPanelAuth(response){
+  if(response.status!==401&&response.status!==403) return;
+  authFailCount++;
+  sessionStorage.removeItem(SS_KEY);
+  showAuth();
+  if(authFailCount>=3){
+    authFailUntil=Date.now()+60000;
+    authFailCount=0;
+    throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
+  }
+  throw new Error(response.status===401?"management key 无效或缺失":"禁止访问 (403)");
+}
 async function managementAPI(path, opts={}){
   const k=getKey();
   if(!k){showAuth();throw new Error("需要管理密钥")}
-  const r=await fetch("/v0/management"+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}});
-  if(!r.ok){let body="";try{body=await r.text()}catch(_){}throw new Error(body.trim()||("HTTP "+r.status))}
-  return r.json();
+  if(Date.now()<authFailUntil) throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
+  let r;
+  try{r=await fetch("/v0/management"+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}})}
+  catch(_){throw new Error("网络请求失败")}
+  rejectPanelAuth(r);
+  authFailCount=0;
+  return readPanelResponse(r);
 }
 async function api(path, opts={}){
   const k=getKey();
@@ -620,42 +665,12 @@ async function api(path, opts={}){
   if(Date.now()<authFailUntil){
     throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
   }
-  const r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
-  if(r.status===401){
-    authFailCount++;
-    sessionStorage.removeItem(SS_KEY);
-    showAuth();
-    if(authFailCount>=3){
-      authFailUntil=Date.now()+60000;
-      authFailCount=0;
-      throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
-    }
-    throw new Error("management key 无效或缺失");
-  }
-  if(r.status===403){
-    authFailCount++;
-    let body="";
-    try{body=await r.text()}catch(_){}
-    if(/IP banned|too many failed/i.test(body)){
-      // Prefer upstream wait window (e.g. "Try again in 27m10s") when present.
-      let waitMs=60000;
-      const m=body.match(/(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s/i)||body.match(/(\d+)\s*m/i);
-      if(m){
-        const mins=parseInt(m[1],10)||0;
-        const secs=m[2]?parseInt(m[2],10):0;
-        waitMs=Math.min(Math.max((mins*60+secs)*1000, 30000), 30*60*1000);
-      }
-      authFailUntil=Date.now()+waitMs;
-      throw new Error(body.trim()||"IP 被封禁，请稍后再试");
-    }
-    if(authFailCount>=3){
-      authFailUntil=Date.now()+60000;
-      authFailCount=0;
-    }
-    throw new Error(body.trim()||"禁止访问 (403)");
-  }
+  let r;
+  try{r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}})}
+  catch(_){throw new Error("网络请求失败")}
+  rejectPanelAuth(r);
   authFailCount=0;
-  return r.json();
+  return readPanelResponse(r);
 }
 function updateModelStatus(status){
   const el=document.getElementById("modelStatus");
@@ -695,8 +710,8 @@ async function load(force, btn){
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
-      g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
-      if(force) toast("刷新失败", "err", d.error);
+      g.innerHTML='<div class="loading">请求失败</div>';
+      if(force) toast("刷新失败", "err", "请求失败");
       return true;
     }
     const accounts=d.accounts||[];
