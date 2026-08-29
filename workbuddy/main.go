@@ -676,8 +676,13 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 
 // -----------------------------------------------------------------------------
 
+type executorRequestWire struct {
+	pluginapi.ExecutorRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 func handleExecExecute(raw []byte) ([]byte, error) {
-	var req pluginapi.ExecutorRequest
+	var req executorRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -705,7 +710,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, req.HostCallbackID)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, fmt.Errorf("http_error: %w", err)
@@ -764,7 +769,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector)
+		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
 			return nil, errCollect
@@ -788,7 +793,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	backendHeaders(httpReq, sa)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

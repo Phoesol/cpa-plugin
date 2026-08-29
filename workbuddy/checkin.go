@@ -211,6 +211,10 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 // (sem=4), preserving input order and the {results, summary} response shape
 // the panel depends on.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
+	return handleManualCheckinWithCallback(req, "")
+}
+
+func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
 	}
@@ -241,7 +245,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = checkinOneAccount(f)
+			results[i] = checkinOneAccountWithCallback(f, callbackID)
 		}(i, f)
 	}
 	wg.Wait()
@@ -297,6 +301,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 // runAutoCheckin path's job), no redundant status refetches. Cache updates
 // merge into the previous entry so credits/plan survive.
 func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
+	return checkinOneAccountWithCallback(f, "")
+}
+
+func checkinOneAccountWithCallback(f pluginapi.HostAuthFileEntry, callbackID string) map[string]any {
 	out := map[string]any{"auth_index": f.AuthIndex}
 
 	sa, err := hostAuthGet(f.AuthIndex)
@@ -320,7 +328,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 
 	// Status probe: a failure here is NOT fatal — the check-in call below is
 	// idempotent upstream and its business message tells us "already" anyway.
-	ci, ciErr := fetchCheckinStatus(sa)
+	ci, ciErr := fetchCheckinStatusWithCallback(sa, callbackID)
 	if ciErr == nil && ci != nil && ci.TodayCheckedIn {
 		mergeCheckinCache(f.ID, ci)
 		out["success"] = true
@@ -330,7 +338,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		return out
 	}
 
-	res, err := performCheckinCall(sa)
+	res, err := performCheckinCallWithCallback(sa, callbackID)
 	if err != nil {
 		out["error"] = err.Error()
 		out["success"] = false
@@ -354,7 +362,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 
 	// Post-call cache refresh: one extra status fetch at most; on failure
 	// write a TodayCheckedIn placeholder rather than leaving the panel stale.
-	if ci2, err2 := fetchCheckinStatus(sa); err2 == nil && ci2 != nil {
+	if ci2, err2 := fetchCheckinStatusWithCallback(sa, callbackID); err2 == nil && ci2 != nil {
 		mergeCheckinCache(f.ID, ci2)
 	} else {
 		mergeCheckinCache(f.ID, &checkinSummary{TodayCheckedIn: true})

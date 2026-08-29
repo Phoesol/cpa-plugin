@@ -279,6 +279,10 @@ func syncAuthNote(authIndex, authID string, sa *storedAuth, cr *creditsSummary, 
 // SchedulerAuthCandidate.ID.
 // force ignores short-circuit only for credit fetch (uses force on cache via caller).
 func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycleAction, err error) {
+	return reconcileOneAccountWithCallback(authIndex, authID, force, "")
+}
+
+func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callbackID string) (action lifecycleAction, err error) {
 	if !lifecycleEnabled() {
 		return lifecycleNone, nil
 	}
@@ -309,7 +313,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		// previous Load→Store sequence here had a check-then-act window
 		// where a concurrent dashboard cachedAccountDetails write could
 		// overwrite our merge with newer plan/checkin values).
-		_, _, cr2, _ := cachedAccountDetails(authID, sa, true)
+		_, _, cr2, _ := cachedAccountDetailsWithCallback(authID, sa, true, callbackID)
 		cr = cr2
 		if cr == nil {
 			return lifecycleNone, nil
@@ -335,7 +339,7 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 		// P1-4: confirm before deleting a Global account — a transient 402
 		// from the upstream billing API could otherwise cause an irreversible
 		// delete. Re-fetch credits once more; only proceed if still exhausted.
-		cr2, err2 := fetchUserResource(sa)
+		cr2, err2 := fetchUserResourceWithCallback(sa, callbackID)
 		if err2 != nil || !isCreditsExhausted(cr2) {
 			// Credits may have recovered (or fetch failed) — don't delete.
 			return lifecycleNone, nil
@@ -352,6 +356,10 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 
 // reconcileAllAccounts walks workbuddy auths and applies lifecycle.
 func reconcileAllAccounts(force bool) []map[string]any {
+	return reconcileAllAccountsWithCallback(force, "")
+}
+
+func reconcileAllAccountsWithCallback(force bool, callbackID string) []map[string]any {
 	if !lifecycleEnabled() {
 		return nil
 	}
@@ -361,7 +369,7 @@ func reconcileAllAccounts(force bool) []map[string]any {
 	}
 	out := make([]map[string]any, 0, len(files))
 	for _, f := range files {
-		act, err := reconcileOneAccount(f.AuthIndex, f.ID, force)
+		act, err := reconcileOneAccountWithCallback(f.AuthIndex, f.ID, force, callbackID)
 		row := map[string]any{"auth_index": f.AuthIndex, "action": act.String()}
 		if err != nil {
 			row["error"] = err.Error()

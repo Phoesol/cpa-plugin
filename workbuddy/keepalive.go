@@ -69,6 +69,10 @@ func isSessionDeadError(msg string) bool {
 //
 // v0.8.0: routed via host.http.do so request-log captures the call.
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
+	return refreshCallWithCallback(sa, "")
+}
+
+func refreshCallWithCallback(sa *storedAuth, callbackID string) (json.RawMessage, []byte, int, error) {
 	mode := oauthClientModeCLI
 	if features := currentFeatureRuntime(); features != nil {
 		mode = features.oauthClientMode
@@ -77,7 +81,7 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoWithCallback(req, callbackID)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -98,10 +102,14 @@ func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
 // refreshOneAuth refreshes the access token for a single workbuddy auth and
 // persists the result. Returns a short status string for logging/tests.
 func refreshOneAuth(authIndex, authID string) (string, error) {
+	return refreshOneAuthWithCallback(authIndex, authID, "")
+}
+
+func refreshOneAuthWithCallback(authIndex, authID, callbackID string) (string, error) {
 	var status string
 	var resultErr error
 	withRefreshLock(authIndex, func() {
-		status, resultErr = refreshOneAuthUnlocked(authIndex, authID)
+		status, resultErr = refreshOneAuthUnlockedWithCallback(authIndex, authID, callbackID)
 	})
 	return status, resultErr
 }
@@ -111,6 +119,10 @@ func withRefreshLock(authIndex string, fn func()) {
 }
 
 func refreshOneAuthUnlocked(authIndex, authID string) (string, error) {
+	return refreshOneAuthUnlockedWithCallback(authIndex, authID, "")
+}
+
+func refreshOneAuthUnlockedWithCallback(authIndex, authID, callbackID string) (string, error) {
 	sa, err := hostAuthGet(authIndex)
 	if err != nil {
 		return "error", fmt.Errorf("get auth: %w", err)
@@ -119,7 +131,7 @@ func refreshOneAuthUnlocked(authIndex, authID string) (string, error) {
 		return "skipped", fmt.Errorf("no refreshToken")
 	}
 
-	data, raw, status, err := refreshCall(sa)
+	data, raw, status, err := refreshCallWithCallback(sa, callbackID)
 	if err != nil {
 		if isSessionDeadError(string(raw)) || isSessionDeadError(err.Error()) {
 			// Upstream killed the offline session: refresh token is dead and
@@ -233,6 +245,10 @@ func getLastKeepalive() *keepaliveSummary {
 
 // runTokenKeepalive refreshes every workbuddy auth once. Returns the summary.
 func runTokenKeepalive() *keepaliveSummary {
+	return runTokenKeepaliveWithCallback("")
+}
+
+func runTokenKeepaliveWithCallback(callbackID string) *keepaliveSummary {
 	sum := &keepaliveSummary{When: time.Now()}
 	if !keepaliveEnabled() {
 		return sum
@@ -260,7 +276,7 @@ func runTokenKeepalive() *keepaliveSummary {
 				row.Nickname = sa.Account.Nickname
 				row.Region = accountRegion(sa)
 			}
-			status, err := refreshOneAuth(f.AuthIndex, f.ID)
+			status, err := refreshOneAuthWithCallback(f.AuthIndex, f.ID, callbackID)
 			row.Status = status
 			if err != nil {
 				row.Detail = truncateRedacted(err.Error(), 200)
@@ -301,13 +317,17 @@ func shouldRunKeepaliveNow(now time.Time) bool {
 // body carries auth_index). Manual runs ignore the token_keepalive toggle —
 // the toggle gates only the 22:00 auto-run.
 func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
+	return handleKeepaliveNowWithCallback(req, "")
+}
+
+func handleKeepaliveNowWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
 	}
 	_ = json.Unmarshal(req.Body, &body)
 	authIndex := strings.TrimSpace(body.AuthIndex)
 	if authIndex == "" {
-		sum := runTokenKeepalive()
+		sum := runTokenKeepaliveWithCallback(callbackID)
 		return map[string]any{"when": sum.When, "results": sum.Results}
 	}
 	sa, err := hostAuthGet(authIndex)
@@ -315,7 +335,7 @@ func handleKeepaliveNow(req pluginapi.ManagementRequest) map[string]any {
 		return map[string]any{"error": err.Error()}
 	}
 	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: accountRegion(sa)}
-	row.Status, err = refreshOneAuth(authIndex, "")
+	row.Status, err = refreshOneAuthWithCallback(authIndex, "", callbackID)
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)
 	}

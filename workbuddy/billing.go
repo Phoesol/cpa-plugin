@@ -77,13 +77,17 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 }
 
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
-	data, err := billingCallOnce(sa, path, body)
+	return billingCallWithCallback(sa, path, body, "")
+}
+
+func billingCallWithCallback(sa *storedAuth, path string, body any, callbackID string) (json.RawMessage, error) {
+	data, err := billingCallOnceWithCallback(sa, path, body, callbackID)
 	for _, d := range billingRetryDelays {
 		if err == nil || !isTransientBillingErr(err) {
 			break
 		}
 		time.Sleep(d)
-		data, err = billingCallOnce(sa, path, body)
+		data, err = billingCallOnceWithCallback(sa, path, body, callbackID)
 	}
 	return data, err
 }
@@ -99,6 +103,10 @@ func isTransientBillingErr(err error) bool {
 }
 
 func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, error) {
+	return billingCallOnceWithCallback(sa, path, body, "")
+}
+
+func billingCallOnceWithCallback(sa *storedAuth, path string, body any, callbackID string) (json.RawMessage, error) {
 	var reader *bytes.Reader
 	if body != nil {
 		raw, _ := json.Marshal(body)
@@ -114,7 +122,7 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	billingHeaders(req, sa)
 	// Route via host.http.do so request-log captures the call (v0.8.1 compliance:
 	// was sharedHTTPClient().Do — bypassed host transport policy + logging).
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoWithCallback(req, callbackID)
 	if err != nil {
 		return nil, err
 	}
@@ -148,10 +156,14 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 }
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
+	return fetchCheckinStatusWithCallback(sa, "")
+}
+
+func fetchCheckinStatusWithCallback(sa *storedAuth, callbackID string) (*checkinSummary, error) {
 	var data json.RawMessage
 	var lastErr error
 	for _, path := range []string{"/v2/billing/meter/checkin-activity-status", "/v2/billing/meter/checkin-status"} {
-		d, err := billingCall(sa, path, nil)
+		d, err := billingCallWithCallback(sa, path, nil, callbackID)
 		if err == nil {
 			data = d
 			lastErr = nil
@@ -260,6 +272,10 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 }
 
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
+	return fetchUserResourceWithCallback(sa, "")
+}
+
+func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsSummary, error) {
 	now := time.Now()
 	// Status 0=active, 3=exhausted-but-still-listed.
 	const pageSize = 100
@@ -279,7 +295,7 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 			body[k] = v
 		}
 		body["PageNumber"] = page
-		data, err := billingCall(sa, "/v2/billing/meter/get-user-resource", body)
+		data, err := billingCallWithCallback(sa, "/v2/billing/meter/get-user-resource", body, callbackID)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +366,11 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 }
 
 func fetchPaymentType(sa *storedAuth) string {
-	data, err := billingCall(sa, "/v2/billing/meter/get-payment-type", nil)
+	return fetchPaymentTypeWithCallback(sa, "")
+}
+
+func fetchPaymentTypeWithCallback(sa *storedAuth, callbackID string) string {
+	data, err := billingCallWithCallback(sa, "/v2/billing/meter/get-payment-type", nil, callbackID)
 	if err != nil {
 		return ""
 	}
@@ -365,7 +385,11 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
+	return performCheckinCallWithCallback(sa, "")
+}
+
+func performCheckinCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
+	data, err := billingCallWithCallback(sa, "/v2/billing/meter/daily-checkin", nil, callbackID)
 	if err != nil {
 		// billingCall returns business errors (code != 0) as Go errors; surface
 		// them as a structured result so the panel can show "already checked in".
@@ -388,7 +412,11 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 // Pro Plan Trial".
 // Repeat call: code=14051 "has applied trial" — surfaced as already_claimed.
 func performTrialCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/billing/ide/trial", nil)
+	return performTrialCallWithCallback(sa, "")
+}
+
+func performTrialCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
+	data, err := billingCallWithCallback(sa, "/billing/ide/trial", nil, callbackID)
 	if err != nil {
 		msg := err.Error()
 		// code=14051 means the trial has already been claimed — not a real error.

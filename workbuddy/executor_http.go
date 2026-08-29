@@ -11,8 +11,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type executorHTTPRequestWire struct {
+	pluginapi.ExecutorHTTPRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 func handleExecHTTPRequest(raw []byte) ([]byte, error) {
-	var req pluginapi.ExecutorHTTPRequest
+	var req executorHTTPRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -40,7 +45,7 @@ func handleExecHTTPRequest(raw []byte) ([]byte, error) {
 		httpReq.Header = make(http.Header)
 	}
 	backendHeaders(httpReq, sa)
-	resp, err := hostHTTPDo(httpReq)
+	resp, err := hostHTTPDoWithCallback(httpReq, req.HostCallbackID)
 	if err != nil {
 		return nil, fmt.Errorf("executor HTTP request: %w", err)
 	}

@@ -68,7 +68,7 @@ func streamHeaders() http.Header {
 // the outbound call and host transport policy applies. The host bridge emits
 // arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
 // SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string) {
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, callbackID string) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -83,7 +83,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		defer cancel()
 	}
 
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		streamEmitError(streamID, fmt.Sprintf("http_error: %v", err))
@@ -147,14 +147,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // the upstream, clean each chunk, return them as a slice. The collector, when
 // non-nil, observes raw upstream chunks for usage extraction. statusCode is the
 // upstream HTTP status (0 for transport-level failures).
-func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the call.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}

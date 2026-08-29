@@ -42,6 +42,10 @@ type wbAccount struct {
 // upstream billing APIs for all accounts simultaneously on page load (which
 // causes 500 from rate-limited /v2/billing/meter/get-user-resource).
 func buildDashboardEx(force, fetchCredits bool) map[string]any {
+	return buildDashboardExWithCallback(force, fetchCredits, "")
+}
+
+func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) map[string]any {
 	files, err := hostAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
@@ -103,7 +107,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			acct.UID = sa.Account.UID
 			acct.Region = accountRegion(sa)
 			if fetchCredits {
-				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
+				plan, ci, cr, errs := cachedAccountDetailsWithCallback(f.ID, sa, force, callbackID)
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr
@@ -135,7 +139,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	// After refresh (force), run lifecycle so exhaust→disable/delete is immediate.
 	var life []map[string]any
 	if force && lifecycleEnabled() {
-		life = reconcileAllAccounts(true)
+		life = reconcileAllAccountsWithCallback(true, callbackID)
 		// Drop accounts deleted during reconcile (Global exhaust) and refresh
 		// disabled/exhausted from disk/cache (host list may lag after save).
 		if files2, err2 := hostAuthList(); err2 == nil {
@@ -260,6 +264,10 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 const egressIPURL = "https://api.ipify.org?format=json"
 
 func fetchEgressIP() (string, error) {
+	return fetchEgressIPWithCallback("")
+}
+
+func fetchEgressIPWithCallback(callbackID string) (string, error) {
 	state := currentProxyState()
 	if runtime.GOOS == "windows" && state.mode == proxyModeInherit {
 		return "", fmt.Errorf("egress IP unavailable for inherited Windows routing")
@@ -272,7 +280,7 @@ func fetchEgressIP() (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := hostHTTPDoWithState(state, req)
+	resp, err := hostHTTPDoWithStateAndCallback(state, req, callbackID)
 	if err != nil {
 		return "", err
 	}

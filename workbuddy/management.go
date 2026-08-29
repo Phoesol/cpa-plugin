@@ -15,6 +15,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type managementRequestWire struct {
+	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 // billingBase hosts the Buddy-gas-station check-in and resource-package APIs.
 // It is a var (not const) so tests can override it with an httptest server.
 var billingBase = "https://www.codebuddy.cn"
@@ -181,7 +186,7 @@ func managementRegistration() managementRegistrationResponse {
 }
 
 func handleManagement(raw []byte) ([]byte, error) {
-	var req pluginapi.ManagementRequest
+	var req managementRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -199,7 +204,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	// reachable; the panel sends the Bearer key on each JSON request.
 	mutating := req.Method == http.MethodPost || mutatingManagementPath(path)
 	if mutating {
-		ip := managementClientIP(req)
+		ip := managementClientIP(req.ManagementRequest)
 		if !allowManagementRequest(ip) {
 			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
 				"error": "rate limit exceeded, try again later",
@@ -207,7 +212,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 		}
 	}
 	if loadedManagementKey() != "" || mutating {
-		if status, msg := checkManagementAuth(req); status != 0 {
+		if status, msg := checkManagementAuth(req.ManagementRequest); status != 0 {
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
 	}
@@ -222,9 +227,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 			"source":  cfg.desensitizeSource,
 		}))
 	case req.Method == http.MethodGet && path == base+"/accounts":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardExWithCallback(false, false, req.HostCallbackID)))
 	case req.Method == http.MethodGet && path == base+"/egress-ip":
-		ip, err := fetchEgressIP()
+		ip, err := fetchEgressIPWithCallback(req.HostCallbackID)
 		if err != nil {
 			return okEnvelope(mgmtJSONResponse(http.StatusBadGateway, map[string]any{
 				"error": "egress IP unavailable",
@@ -232,21 +237,21 @@ func handleManagement(raw []byte) ([]byte, error) {
 		}
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ip": ip}))
 	case req.Method == http.MethodPost && path == base+"/refresh":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(true, true)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardExWithCallback(true, true, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/checkin":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckinWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req.ManagementRequest)))
 	case req.Method == http.MethodGet && path == base+"/credits":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQueryWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/import":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/trial":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrial(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrialWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/select":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNowWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	}

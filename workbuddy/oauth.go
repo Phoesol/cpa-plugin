@@ -18,6 +18,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type authRefreshRequestWire struct {
+	pluginapi.AuthRefreshRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 // newLoginClient builds an isolated client with its own cookie jar and binds it
 // to the routing snapshot active when the login starts.
 func newLoginClient() (*http.Client, error) {
@@ -356,7 +361,7 @@ func toAuthDataForLoginPoll(sa *storedAuth) pluginapi.AuthData {
 }
 
 func handleRefreshAuth(raw []byte) ([]byte, error) {
-	var req pluginapi.AuthRefreshRequest
+	var req authRefreshRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
@@ -367,7 +372,7 @@ func handleRefreshAuth(raw []byte) ([]byte, error) {
 	// Route via host.http.do so request-log captures the refresh call (H2
 	// compliance: was doJSON(sharedHTTPClient()) — bypassed host transport
 	// policy + logging for the X-Refresh-Token endpoint).
-	data, raw2, status, err := refreshCall(sa)
+	data, raw2, status, err := refreshCallWithCallback(sa, req.HostCallbackID)
 	if err != nil {
 		if status >= 400 {
 			return nil, fmt.Errorf("refresh rejected (HTTP %d)", status)

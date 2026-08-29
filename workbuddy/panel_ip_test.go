@@ -26,7 +26,7 @@ func TestFetchEgressIPUsesSingleRoutingSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := strings.Index(string(source), "func fetchEgressIP()")
+	start := strings.Index(string(source), "func fetchEgressIPWithCallback(callbackID string)")
 	if start < 0 {
 		t.Fatal("fetchEgressIP source not found")
 	}
@@ -41,8 +41,8 @@ func TestFetchEgressIPUsesSingleRoutingSnapshot(t *testing.T) {
 	if !strings.Contains(body, "state := currentProxyState()") {
 		t.Fatal("fetchEgressIP does not capture the routing snapshot")
 	}
-	if !strings.Contains(body, "hostHTTPDoWithState(state, req)") {
-		t.Fatal("fetchEgressIP does not use the captured snapshot for its HTTP route")
+	if !strings.Contains(body, "hostHTTPDoWithStateAndCallback(state, req, callbackID)") {
+		t.Fatal("fetchEgressIP does not use the captured snapshot and callback for its HTTP route")
 	}
 }
 
