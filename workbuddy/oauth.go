@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"time"
 
@@ -68,6 +69,10 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 	} else {
 		commonHeaders(req)
 	}
+	return doJSONRequest(client, req)
+}
+
+func doJSONRequest(client *http.Client, req *http.Request) (json.RawMessage, int, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -93,12 +98,133 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 	return env.Data, resp.StatusCode, nil
 }
 
+type oauthRequestProfile struct {
+	mode      string
+	stateURL  string
+	userAgent string
+	origin    string
+}
+
+func oauthProfileForMode(mode string) oauthRequestProfile {
+	if mode == oauthClientModeWorkBuddy {
+		return oauthRequestProfile{
+			mode:      oauthClientModeWorkBuddy,
+			stateURL:  upstreamBaseCN + "/v2/plugin/auth/state?platform=workbuddy",
+			userAgent: "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0",
+			origin:    "https://www.workbuddy.cn",
+		}
+	}
+	return oauthRequestProfile{
+		mode:      oauthClientModeCLI,
+		stateURL:  endpointAuthState,
+		userAgent: clientUA,
+		origin:    originReferer,
+	}
+}
+
+func applyOAuthProfileHeaders(req *http.Request, profile oauthRequestProfile) {
+	commonHeaders(req)
+	if profile.mode != oauthClientModeWorkBuddy {
+		return
+	}
+	req.Header.Set("User-Agent", profile.userAgent)
+	req.Header.Set("Origin", profile.origin)
+	req.Header.Set("Referer", profile.origin+"/")
+}
+
+func applyAnonymousOAuthHeaders(req *http.Request, profile oauthRequestProfile) {
+	applyOAuthProfileHeaders(req, profile)
+	if profile.mode != oauthClientModeWorkBuddy {
+		return
+	}
+	req.Header.Set("X-No-Authorization", "true")
+	req.Header.Set("X-No-User-Id", "true")
+	req.Header.Set("X-No-Enterprise-Id", "true")
+	req.Header.Set("X-No-Department-Info", "true")
+}
+
+func buildAuthStateRequest(profile oauthRequestProfile) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, profile.stateURL, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, err
+	}
+	applyAnonymousOAuthHeaders(req, profile)
+	return req, nil
+}
+
+func buildAuthTokenRequest(profile oauthRequestProfile, state string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, endpointAuthToken+state, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyAnonymousOAuthHeaders(req, profile)
+	return req, nil
+}
+
+func buildLoginAccountRequest(profile oauthRequestProfile, state, accessToken string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, endpointLoginAcct+state, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyOAuthProfileHeaders(req, profile)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if profile.mode == oauthClientModeWorkBuddy {
+		req.Header.Set("X-No-User-Id", "true")
+		req.Header.Set("X-No-Enterprise-Id", "true")
+		req.Header.Set("X-No-Department-Info", "true")
+	}
+	return req, nil
+}
+
+func buildTokenRefreshRequest(profile oauthRequestProfile, sa *storedAuth) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodPost, endpointTokenRefreshFor(sa), nil)
+	if err != nil {
+		return nil, err
+	}
+	applyOAuthProfileHeaders(req, profile)
+	if profile.mode == oauthClientModeWorkBuddy {
+		req.Header.Set("X-No-Authorization", "true")
+		req.Header.Set("X-No-User-Id", "true")
+		req.Header.Set("X-No-Department-Info", "true")
+		if sa.Account.EnterpriseID == "" {
+			req.Header.Set("X-No-Enterprise-Id", "true")
+		}
+	}
+	req.Header.Set("X-Refresh-Token", sa.Auth.RefreshToken)
+	if sa.Account.EnterpriseID != "" {
+		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
+	}
+	req.Header.Set("X-Auth-Refresh-Source", providerName)
+	return req, nil
+}
+
+func decorateDesktopAuthURL(rawURL, loginSessionID string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	query := u.Query()
+	query.Set("version", "5.3.14")
+	query.Set("loginSessionId", loginSessionID)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
+}
+
 func handleStartLogin(raw []byte) ([]byte, error) {
 	client, err := newLoginClient()
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)
 	}
-	data, _, err := doJSON(client, http.MethodPost, endpointAuthState, nil, bytes.NewReader([]byte("{}")))
+	mode := oauthClientModeCLI
+	if features := currentFeatureRuntime(); features != nil {
+		mode = features.oauthClientMode
+	}
+	profile := oauthProfileForMode(mode)
+	stateReq, err := buildAuthStateRequest(profile)
+	if err != nil {
+		return nil, fmt.Errorf("auth state failed: %w", err)
+	}
+	data, _, err := doJSONRequest(client, stateReq)
 	if err != nil {
 		return nil, fmt.Errorf("auth state failed: %w", err)
 	}
@@ -107,7 +233,20 @@ func handleStartLogin(raw []byte) ([]byte, error) {
 	if st.State == "" || st.AuthURL == "" {
 		return nil, fmt.Errorf("auth state: missing state or authUrl — please restart the login flow")
 	}
-	loginStates.Store(st.State, &loginCtx{client: client, expires: time.Now().Add(loginTTL)})
+	loginSessionID := ""
+	if profile.mode == oauthClientModeWorkBuddy {
+		loginSessionID = randomHex(16)
+		st.AuthURL, err = decorateDesktopAuthURL(st.AuthURL, loginSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("auth state: invalid authUrl: %w", err)
+		}
+	}
+	loginStates.Store(st.State, &loginCtx{
+		client:         client,
+		expires:        time.Now().Add(loginTTL),
+		profile:        profile,
+		loginSessionID: loginSessionID,
+	})
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
 		URL:       st.AuthURL,
@@ -135,6 +274,10 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 		loginStates.Delete(state)
 		return nil, fmt.Errorf("poll: login expired (5 min timeout) — please re-initiate login and complete within 5 minutes")
 	}
+	profile := lc.profile
+	if profile.mode == "" {
+		profile = oauthProfileForMode(oauthClientModeCLI)
+	}
 	pollClient, err := loginClientForCurrentRouting(lc)
 	if err != nil {
 		loginStates.Delete(state)
@@ -147,7 +290,12 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	// with the token bundle once complete. login/account sits behind the
 	// openresty gateway and is rejected (401) until login finishes, so probe
 	// token first and only fetch account once we hold a bearer.
-	tokRaw, status, errTok := doJSON(pollClient, http.MethodGet, endpointAuthToken+state, nil, nil)
+	tokenReq, err := buildAuthTokenRequest(profile, state)
+	if err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: token request: %w", err)
+	}
+	tokRaw, status, errTok := doJSONRequest(pollClient, tokenReq)
 	if errTok != nil {
 		// Transport-level failures and 5xx are real errors, not "still waiting":
 		// surface them so the user sees a failure instead of polling until TTL.
@@ -175,11 +323,12 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 	}
 
 	var acct accountData
-	acctHeaders := func(r *http.Request) {
-		commonHeaders(r)
-		r.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	accountReq, err := buildLoginAccountRequest(profile, state, tok.AccessToken)
+	if err != nil {
+		loginStates.Delete(state)
+		return nil, fmt.Errorf("poll: account request: %w", err)
 	}
-	acctRaw, _, errAcct := doJSON(pollClient, http.MethodGet, endpointLoginAcct+state, acctHeaders, nil)
+	acctRaw, _, errAcct := doJSONRequest(pollClient, accountReq)
 	if errAcct != nil {
 		loginStates.Delete(state)
 		return nil, fmt.Errorf("poll: account lookup failed after token success: %w", errAcct)

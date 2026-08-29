@@ -23,7 +23,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -70,17 +69,14 @@ func isSessionDeadError(msg string) bool {
 //
 // v0.8.0: routed via host.http.do so request-log captures the call.
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
-	url := endpointTokenRefreshFor(sa)
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	mode := oauthClientModeCLI
+	if features := currentFeatureRuntime(); features != nil {
+		mode = features.oauthClientMode
+	}
+	req, err := buildTokenRefreshRequest(oauthProfileForMode(mode), sa)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	commonHeaders(req)
-	req.Header.Set("X-Refresh-Token", sa.Auth.RefreshToken)
-	if sa.Account.EnterpriseID != "" {
-		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
-	}
-	req.Header.Set("X-Auth-Refresh-Source", providerName)
 	resp, err := hostHTTPDo(req)
 	if err != nil {
 		return nil, nil, 0, err
