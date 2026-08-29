@@ -1,6 +1,7 @@
 .PHONY: build test lint clean release
 
 GO ?= go
+NODE ?= node
 VERSION ?= $(shell cat VERSION 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -X main.version=$(VERSION)
 
@@ -11,6 +12,7 @@ build:
 # Run all tests with race detector.
 test:
 	$(GO) test -race -count=1 ./...
+	$(NODE) --test panel.test.js
 
 # Lint everything (requires gofmt + go vet; staticcheck/gocritic/unparam optional).
 lint:
