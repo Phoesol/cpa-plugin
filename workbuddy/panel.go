@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -390,7 +391,8 @@ func servePanel(sub string) []byte {
 	if sub != "" && sub != "/" && sub != "/panel" && sub != "/panel.html" {
 		return []byte("<h1>404</h1>")
 	}
-	return panelHTML
+	base, _ := json.Marshal(loadedManagementBasePath())
+	return bytes.ReplaceAll(panelHTML, []byte("__WB_MANAGEMENT_BASE_PATH_JSON__"), base)
 }
 
 //go:embed panel.html

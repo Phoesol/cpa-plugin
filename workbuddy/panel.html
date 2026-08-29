@@ -247,13 +247,14 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 </div>
 <div class="toasts" id="toasts"></div>
 <script>
-const API = "/v0/management/plugins/workbuddy";
+const MANAGEMENT_BASE_PATH=__WB_MANAGEMENT_BASE_PATH_JSON__;
+const API=MANAGEMENT_BASE_PATH+"/plugins/workbuddy";
 
-/* ---------- management key acquisition (3 fallbacks, zero config) ----------
-   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
+/* ---------- management key acquisition (one-shot query override, then 2 fallbacks) ----------
+   1) ?key= URL param (cleaned from history, kept in sessionStorage).
+   2) sessionStorage (manual input or captured query, never persisted).
+   3) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
       iframe embed) — same approach as cpa-plugin-key-policy.
-   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
-   3) Manual input (sessionStorage only, never persisted).
 */
 const ENC_PREFIX = "enc::v1::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
@@ -279,13 +280,17 @@ function readPanelKey(){
     return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
   }catch(e){return null}
 }
-function readUrlKey(){
-  const m=new URLSearchParams(window.location.search).get("key");
-  if(m){history.replaceState(null,"",window.location.pathname)}
-  return m;
+function captureUrlKey(){
+  const url=new URL(window.location.href);
+  const key=url.searchParams.get("key");
+  if(!key) return;
+  sessionStorage.setItem(SS_KEY,key);
+  url.searchParams.delete("key");
+  history.replaceState(null,"",url.pathname+url.search+url.hash);
 }
+captureUrlKey();
 function getKey(){
-  return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey();
+  return sessionStorage.getItem(SS_KEY)||readPanelKey();
 }
 async function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
@@ -667,7 +672,7 @@ async function managementAPI(path, opts={}){
   if(!k){showAuth();throw new Error("需要管理密钥")}
   if(Date.now()<authFailUntil) throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
   let r;
-  try{r=await fetch("/v0/management"+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}})}
+  try{r=await fetch(MANAGEMENT_BASE_PATH+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}})}
   catch(_){throw new Error("网络请求失败")}
   rejectPanelAuth(r);
   authFailCount=0;

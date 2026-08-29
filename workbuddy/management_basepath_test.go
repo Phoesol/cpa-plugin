@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -44,5 +45,12 @@ func TestManagementUsesRegisteredResourceBasePath(t *testing.T) {
 	}
 	if len(resp.Body) == 0 {
 		t.Fatal("empty panel body")
+	}
+	html := string(resp.Body)
+	if !strings.Contains(html, `const MANAGEMENT_BASE_PATH="/custom/manage";`) {
+		t.Fatalf("panel does not contain registered BasePath: %s", html)
+	}
+	if strings.Contains(html, `fetch("/v0/management/plugins/workbuddy`) {
+		t.Fatal("panel still hardcodes the historical management BasePath")
 	}
 }

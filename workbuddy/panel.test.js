@@ -51,9 +51,11 @@ function fakeElement() {
 function loadPanel(overrides = {}) {
   const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
-  const source = scripts.at(-1)[1].replace(/\nloadInitial\(\);\s*$/, "");
+  const source = scripts.at(-1)[1]
+    .replace("__WB_MANAGEMENT_BASE_PATH_JSON__", JSON.stringify("/v0/management"))
+    .replace(/\nloadInitial\(\);\s*$/, "");
   const elements = new Map();
-  const storage = new Map();
+  const storage = new Map(overrides.sessionEntries || []);
   const document = {
     documentElement: fakeElement(),
     getElementById(id) {
@@ -105,6 +107,30 @@ function fakeResponse(status, contentType, body) {
     async text() { return body; },
   };
 }
+
+test("query key replaces session key once and is removed from URL", () => {
+  let replaced = "";
+  let localWrites = 0;
+  const location = {
+    href: "http://localhost/panel?key=secret-value&view=all#accounts",
+    search: "?key=secret-value&view=all",
+    pathname: "/panel",
+    hash: "#accounts",
+    host: "localhost",
+  };
+  const { storage } = loadPanel({
+    sessionEntries: [["workbuddy-mgmt-key", "old-value"]],
+    location,
+    history: { replaceState(state, title, url) { replaced = url; } },
+    localStorage: {
+      getItem() { return null; },
+      setItem() { localWrites += 1; },
+    },
+  });
+  assert.equal(storage.get("workbuddy-mgmt-key"), "secret-value");
+  assert.equal(replaced, "/panel?view=all#accounts");
+  assert.equal(localWrites, 0);
+});
 
 test("model status banner hides ready and persists non-ready states", () => {
   const { context, elements } = loadPanel();
