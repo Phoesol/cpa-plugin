@@ -253,3 +253,23 @@ test("panel response raw dashboard errors never reach the grid or toast", async 
   assert.match(visible, /请求失败/);
   assert.doesNotMatch(visible, /credential-value|secret-token/);
 });
+
+test("credits sort keeps real zero above unknown without mutation", () => {
+  const { context } = loadPanel();
+  const accounts = [
+    { auth_index: "unknown" },
+    { auth_index: "zero", credits: { total_remain: 0, total_used: 0, total_size: 0 } },
+    { auth_index: "positive", credits: { total_remain: 10, total_used: 0, total_size: 10 } },
+  ];
+  const original = structuredClone(accounts);
+  const ids = list => Array.from(list, account => account.auth_index);
+  assert.deepEqual(ids(context.accountsForView(accounts)), ["unknown", "zero", "positive"]);
+  const button = { textContent: "" };
+  context.cycleRemainSort(button);
+  assert.deepEqual(ids(context.accountsForView(accounts)), ["positive", "zero", "unknown"]);
+  context.cycleRemainSort(button);
+  assert.deepEqual(ids(context.accountsForView(accounts)), ["zero", "positive", "unknown"]);
+  context.cycleRemainSort(button);
+  assert.deepEqual(ids(context.accountsForView(accounts)), ["unknown", "zero", "positive"]);
+  assert.deepEqual(accounts, original);
+});

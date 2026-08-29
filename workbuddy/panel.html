@@ -525,8 +525,10 @@ function accountsForView(accounts){
   const view=accountsForFilter(accounts).filter(a=>!query||[a.nickname,a.label,a.name,a.uid].some(v=>String(v||"").toLowerCase().includes(query)));
   if(sortDirection==="original") return view.slice();
   return view.slice().sort((a,b)=>{
-    const remain=a=>Number((a.credits&&a.credits.total_remain)||0)||0;
-    const diff=remain(a)-remain(b);
+    const left=creditOf(a),right=creditOf(b);
+    if(left.known!==right.known) return left.known?-1:1;
+    if(!left.known) return 0;
+    const diff=left.remain-right.remain;
     return sortDirection==="desc"?-diff:diff;
   });
 }
@@ -541,13 +543,13 @@ function cycleRemainSort(btn){
 }
 function creditOf(a){
   const cr=a&&a.credits;
-  if(!cr) return {remain:0, used:0, size:0, known:false};
-  const remain=Number(cr.total_remain)||0;
-  const used=Number(cr.total_used)||0;
-  const size=Number(cr.total_size)||0;
-  // known if we have any usage signal, size, or packages
-  const known=remain>0||used>0||size>0||(Array.isArray(cr.packages)&&cr.packages.length>0);
-  return {remain, used, size, known};
+  if(!cr) return {remain:0,used:0,size:0,known:false};
+  return {
+    remain:Number(cr.total_remain)||0,
+    used:Number(cr.total_used)||0,
+    size:Number(cr.total_size)||0,
+    known:true
+  };
 }
 function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
