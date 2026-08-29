@@ -161,6 +161,7 @@ func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
+			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get effective WorkBuddy desensitize runtime settings."},
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List WorkBuddy accounts with credits, plan and check-in status."},
 			{Method: http.MethodGet, Path: base + "/egress-ip", Description: "Get the current egress IP through the active WorkBuddy HTTP route."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
@@ -213,6 +214,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch {
+	case req.Method == http.MethodGet && path == base+"/desensitize":
+		cfg := currentFeatureRuntime()
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"enabled": cfg.desensitizeEnabled,
+			"terms":   append([]string(nil), cfg.desensitizeTerms...),
+			"source":  cfg.desensitizeSource,
+		}))
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
 	case req.Method == http.MethodGet && path == base+"/egress-ip":

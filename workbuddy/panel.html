@@ -184,6 +184,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="bar">
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
+    <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
@@ -213,6 +214,26 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">取消</button>
       <button type="button" onclick="importAuth(this)">导入并保存</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask" id="desensitizeModal" onclick="onDesensitizeMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="desensitizeModalTitle">
+    <div class="modal-hd">
+      <h2 id="desensitizeModalTitle">屏蔽词设置</h2>
+      <button type="button" class="modal-x" onclick="closeDesensitizeModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <label class="toggle"><input type="checkbox" id="desensitizeEnabled"> 启用屏蔽词混淆</label>
+      <p class="hint">当前词表：<span id="desensitizeSource"></span>。每行一个词，留空保存为空词表。</p>
+      <label class="hint" for="desensitizeTerms">词表</label>
+      <textarea id="desensitizeTerms" rows="10" placeholder="每行一个词"></textarea>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="restoreDesensitizeTerms(this)">恢复默认词表</button>
+      <button type="button" class="sec" onclick="restoreAllDesensitizeDefaults(this)">恢复全部默认</button>
+      <button type="button" class="sec" onclick="closeDesensitizeModal()">取消</button>
+      <button type="button" onclick="saveDesensitize(this)">保存</button>
     </div>
   </div>
 </div>
@@ -569,6 +590,13 @@ function renderSummary(accounts){
     `}
   `;
 }
+async function managementAPI(path, opts={}){
+  const k=getKey();
+  if(!k){showAuth();throw new Error("需要管理密钥")}
+  const r=await fetch("/v0/management"+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}});
+  if(!r.ok){let body="";try{body=await r.text()}catch(_){}throw new Error(body.trim()||("HTTP "+r.status))}
+  return r.json();
+}
 async function api(path, opts={}){
   const k=getKey();
   if(!k){
@@ -859,6 +887,52 @@ async function claimTrialAll(btn){
 async function toggleAuto(on){
   try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
 }
+async function loadDesensitizeSettings(){
+  const d=await api("/desensitize");
+  document.getElementById("desensitizeEnabled").checked=!!d.enabled;
+  document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
+  document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+async function openDesensitizeModal(){
+  try{
+    await loadDesensitizeSettings();
+    document.getElementById("desensitizeModal").classList.add("show");
+  }catch(e){toast("读取屏蔽词设置失败","err",e.message||String(e))}
+}
+function closeDesensitizeModal(){
+  document.getElementById("desensitizeModal").classList.remove("show");
+}
+function onDesensitizeMaskClick(e){
+  if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
+}
+async function saveDesensitize(btn){
+  const terms=document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:document.getElementById("desensitizeEnabled").checked,desensitize_terms:terms})});
+    await loadDesensitizeSettings();
+    toast("屏蔽词设置已保存","ok");
+  }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreDesensitizeTerms(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
+    await loadDesensitizeSettings();
+    toast("已恢复默认词表","ok");
+  }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreAllDesensitizeDefaults(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
+    await loadDesensitizeSettings();
+    toast("已恢复全部默认设置","ok");
+  }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
 function openImportModal(){
   const m=document.getElementById("importModal");
   m.classList.add("show");
@@ -891,6 +965,7 @@ async function importAuth(btn){
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
