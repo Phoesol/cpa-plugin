@@ -887,11 +887,27 @@ async function claimTrialAll(btn){
 async function toggleAuto(on){
   try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
 }
-async function loadDesensitizeSettings(){
-  const d=await api("/desensitize");
+function renderDesensitizeSettings(d){
   document.getElementById("desensitizeEnabled").checked=!!d.enabled;
   document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
   document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+async function loadDesensitizeSettings(){
+  renderDesensitizeSettings(await api("/desensitize"));
+}
+function sameDesensitizeTerms(left,right){
+  return Array.isArray(left)&&left.length===right.length&&left.every((term,i)=>term===right[i]);
+}
+async function waitForDesensitizeSettings(matches){
+  for(let attempt=0;attempt<20;attempt++){
+    const d=await api("/desensitize");
+    if(matches(d)){
+      renderDesensitizeSettings(d);
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  throw new Error("设置已写入，但运行时未应用");
 }
 async function openDesensitizeModal(){
   try{
@@ -906,11 +922,12 @@ function onDesensitizeMaskClick(e){
   if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
 }
 async function saveDesensitize(btn){
-  const terms=document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+  const terms=[...new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  const enabled=document.getElementById("desensitizeEnabled").checked;
   busy(btn,true);
   try{
-    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:document.getElementById("desensitizeEnabled").checked,desensitize_terms:terms})});
-    await loadDesensitizeSettings();
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:enabled,desensitize_terms:terms})});
+    await waitForDesensitizeSettings(d=>d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms));
     toast("屏蔽词设置已保存","ok");
   }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
   finally{busy(btn,false)}
@@ -919,7 +936,7 @@ async function restoreDesensitizeTerms(btn){
   busy(btn,true);
   try{
     await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
-    await loadDesensitizeSettings();
+    await waitForDesensitizeSettings(d=>d.source==="default");
     toast("已恢复默认词表","ok");
   }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
   finally{busy(btn,false)}
@@ -928,7 +945,7 @@ async function restoreAllDesensitizeDefaults(btn){
   busy(btn,true);
   try{
     await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
-    await loadDesensitizeSettings();
+    await waitForDesensitizeSettings(d=>!d.enabled&&d.source==="default");
     toast("已恢复全部默认设置","ok");
   }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
   finally{busy(btn,false)}

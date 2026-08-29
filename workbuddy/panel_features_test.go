@@ -63,3 +63,32 @@ func TestPanelEditsDesensitizeThroughGenericPluginConfigAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelWaitsForAsyncConfigReloadBeforeShowingSavedSettings(t *testing.T) {
+	html := strings.ReplaceAll(string(panelHTML), "\r\n", "\n")
+	for _, want := range []string{
+		`async function waitForDesensitizeSettings(matches){`,
+		`const d=await api("/desensitize");`,
+		`await new Promise(resolve=>setTimeout(resolve,100));`,
+		`await waitForDesensitizeSettings(d=>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("panel does not wait for effective runtime settings after async config reload; missing %q", want)
+		}
+	}
+
+	start := strings.Index(html, "async function saveDesensitize(btn){")
+	if start < 0 {
+		t.Fatal("saveDesensitize function not found")
+	}
+	end := strings.Index(html[start:], "\nasync function restoreDesensitizeTerms")
+	if end < 0 {
+		t.Fatal("saveDesensitize function end not found")
+	}
+	body := html[start : start+end]
+	patch := strings.Index(body, `await managementAPI("/plugins/workbuddy/config"`)
+	wait := strings.Index(body, `await waitForDesensitizeSettings(`)
+	if patch < 0 || wait < patch {
+		t.Fatalf("save does not wait for effective settings after PATCH: patch=%d wait=%d", patch, wait)
+	}
+}
