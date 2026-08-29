@@ -304,7 +304,7 @@ func TestModelStoreSavedBytesExcludeAuthSecretsAndAliases(t *testing.T) {
 	)
 	sa := &storedAuth{
 		Auth:    storedTokens{AccessToken: accessToken, RefreshToken: refreshToken, Domain: "codebuddy.cn"},
-		Account: storedAccount{UID: "uid-1", EnterpriseID: "enterprise-1"},
+		Account: storedAccount{EnterpriseID: "enterprise-1"},
 	}
 	identity, err := modelAuthIdentityFor(strings.Join([]string{authPath, rawStorageJSON, alias}, "|"), sa)
 	if err != nil {
@@ -399,6 +399,20 @@ func TestWriteModelCacheAtomicReadOnlyDirectoryFailureLeavesNoTemps(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	probe, err := os.CreateTemp(root, ".permission-probe-*")
+	if err == nil {
+		probePath := probe.Name()
+		if err := probe.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(probePath); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("current process can write to a chmod 0500 directory (for example via root or CAP_DAC_OVERRIDE); permission-denial assertion is not applicable")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("write probe failed with %v, want permission denied", err)
+	}
 	if err := writeModelCacheAtomic(filepath.Join(root, "metadata.json"), []byte(`{"new":true}`), func([]byte) error { return nil }); err == nil {
 		t.Fatal("writeModelCacheAtomic() succeeded in read-only directory")
 	}
