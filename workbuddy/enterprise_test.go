@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseEnterpriseCreditsStrict(t *testing.T) {
@@ -186,10 +187,47 @@ func TestFetchUserResourceEnterpriseSelection(t *testing.T) {
 }
 
 func TestReconcileSkipsLifecycleWhenCreditsRefreshFailed(t *testing.T) {
-	if !creditsErrorsBlockLifecycle([]string{"checkin: x", "credits: upstream 500"}) {
-		t.Fatal("credits error did not block lifecycle")
+	sa := &storedAuth{
+		Auth:    storedTokens{AccessToken: "token", Domain: "www.codebuddy.cn"},
+		Account: storedAccount{UID: "user-stale"},
 	}
-	if creditsErrorsBlockLifecycle([]string{"checkin: x"}) {
-		t.Fatal("unrelated error blocked lifecycle")
+	oldGetBundle := reconcileHostAuthGetBundle
+	reconcileHostAuthGetBundle = func(string) (*storedAuth, *hostAuthPhysical, error) {
+		return sa, &hostAuthPhysical{}, nil
+	}
+	t.Cleanup(func() { reconcileHostAuthGetBundle = oldGetBundle })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/billing/meter/get-enterprise-user-usage" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer srv.Close()
+	restoreBillingBase := setBillingBase(srv.URL)
+	defer restoreBillingBase()
+
+	cfg, err := parseFeatureRuntime([]byte("enterprise_credits: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCfg := featureRuntime.Load()
+	featureRuntime.Store(cfg)
+	t.Cleanup(func() { featureRuntime.Store(oldCfg) })
+
+	const authID = "enterprise-stale-lifecycle"
+	accountCache.Store(authID, &accountCacheEntry{
+		credits: &creditsSummary{TotalUsed: 100, TotalSize: 100},
+		fetched: time.Now().Add(-time.Hour),
+	})
+	t.Cleanup(func() { accountCache.Delete(authID) })
+
+	action, err := reconcileOneAccount("auth-index", authID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != lifecycleNone {
+		t.Fatalf("action = %s, want none after credits refresh failure", action.String())
 	}
 }

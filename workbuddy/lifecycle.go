@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	lifecycleState   sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
-	lifecycleSaveTTL = 30 * time.Second
+	lifecycleState             sync.Map // auth_id (auth.ID) -> lifecycleStateEntry
+	lifecycleSaveTTL           = 30 * time.Second
+	reconcileHostAuthGetBundle = hostAuthGetBundle
 )
 
 type lifecycleStateEntry struct {
@@ -297,7 +298,7 @@ func reconcileOneAccountWithCallback(authIndex, authID string, force bool, callb
 	}
 	// Single host.auth.get (A-19): previous hostAuthGet + hostAuthGetPhysical
 	// doubled RPC on every reconcile tick (21 accounts × 2).
-	sa, phys, err := hostAuthGetBundle(authIndex)
+	sa, phys, err := reconcileHostAuthGetBundle(authIndex)
 	if err != nil {
 		return lifecycleNone, err
 	}
