@@ -123,7 +123,7 @@ func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
 	if node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
 		return nil, nil
 	}
-	if node.Kind != yaml.SequenceNode || node.Tag == "!!null" {
+	if node.Kind != yaml.SequenceNode || node.Tag != "!!seq" {
 		return nil, errors.New("models must be an array of strings")
 	}
 	models := make([]string, len(node.Content))
@@ -132,7 +132,9 @@ func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
 		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" {
 			return nil, errors.New("models entries must be strings")
 		}
-		if strings.ContainsAny(entry.Value, "\r\n") {
+		if strings.IndexFunc(entry.Value, func(r rune) bool {
+			return r == '\r' || r == '\n' || r == 0x85 || r == 0x2028 || r == 0x2029
+		}) >= 0 {
 			return nil, errors.New("models entries must be single-line strings")
 		}
 		id := strings.TrimSpace(entry.Value)

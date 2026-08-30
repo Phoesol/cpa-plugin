@@ -72,6 +72,9 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "models is scalar", raw: "models: fixed\n"},
 		{name: "null-tagged sequence", raw: "models: !!null [serve-alpha]\n"},
 		{name: "null-tagged mapping", raw: "models: !!null {id: serve-alpha}\n"},
+		{name: "map-tagged sequence", raw: "models: !!map [serve-alpha]\n"},
+		{name: "string-tagged sequence", raw: "models: !!str [serve-alpha]\n"},
+		{name: "custom-tagged sequence", raw: "models: !catalog [serve-alpha]\n"},
 		{name: "object entry", raw: "models: [{id: serve-alpha}]\n"},
 		{name: "nested list entry", raw: "models: [[serve-alpha]]\n"},
 		{name: "number entry", raw: "models: [123]\n"},
@@ -81,6 +84,9 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "escaped multiline entry", raw: "models: [\"serve-alpha\\nserve-beta\"]\n"},
 		{name: "escaped leading newline", raw: "models: [\"\\nserve-alpha\"]\n"},
 		{name: "escaped trailing newline", raw: "models: [\"serve-alpha\\n\"]\n"},
+		{name: "escaped next-line separator", raw: "models: [\"serve-alpha\\Nserve-beta\"]\n"},
+		{name: "escaped line separator", raw: "models: [\"serve-alpha\\Lserve-beta\"]\n"},
+		{name: "escaped paragraph separator", raw: "models: [\"serve-alpha\\Pserve-beta\"]\n"},
 		{name: "whitespace-only entry", raw: "models: [\" \\t\\u3000 \"]\n"},
 		{name: "over 512 bytes", raw: "models: ['" + strings.Repeat("x", maxDiscoveredModelIDBytes+1) + "']\n"},
 		{name: "duplicate after trim", raw: "models: [serve-alpha, ' serve-alpha ']\n"},
@@ -88,6 +94,26 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			if cfg, err := parseFeatureRuntime([]byte(tt.raw)); err == nil {
 				t.Fatalf("configured models = %#v, want error", cfg.configuredModels)
+			}
+		})
+	}
+}
+
+func TestParseTopLevelConfigScalarsRejectsWrongTypesAndMerges(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "management sequence", raw: "management_key: [replacement]\n"},
+		{name: "management boolean", raw: "management_key: true\n"},
+		{name: "lifecycle sequence", raw: "lifecycle_auto: [false]\n"},
+		{name: "scheduler incompatible tag", raw: "scheduler_mode: !!seq credits\n"},
+		{name: "usage key mapping", raw: "usage_report_key: {value: secret}\n"},
+		{name: "root merge", raw: "defaults: &d\n  lifecycle_auto: false\n  scheduler_mode: credits\n  models: [serve-alpha]\n<<: *d\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if values, err := parseTopLevelConfigScalars([]byte(tt.raw)); err == nil {
+				t.Fatalf("config scalars = %#v, want error", values)
 			}
 		})
 	}

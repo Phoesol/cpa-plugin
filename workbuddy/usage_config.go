@@ -161,8 +161,34 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 	values := make(map[string]string, len(root.Content)/2)
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
-		if key.Kind != yaml.ScalarNode || value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
+		if key.Kind != yaml.ScalarNode {
 			continue
+		}
+		if key.Value == "<<" || key.Tag == "!!merge" {
+			return nil, errors.New("config_yaml must not use merge keys")
+		}
+
+		expected := ""
+		switch key.Value {
+		case "checkin_auto", "lifecycle_auto", "token_keepalive":
+			expected = "boolean"
+		case "scheduler_mode", "usage_report_url", "usage_report_key", "management_key":
+			expected = "string"
+		default:
+			continue
+		}
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+			continue
+		}
+		if value.Kind != yaml.ScalarNode {
+			return nil, errors.New(key.Value + " must be a scalar " + expected)
+		}
+		if expected == "boolean" {
+			if value.Tag != "!!bool" && value.Tag != "!!int" && value.Tag != "!!str" {
+				return nil, errors.New(key.Value + " must be a boolean")
+			}
+		} else if value.Tag != "!!str" {
+			return nil, errors.New(key.Value + " must be a string")
 		}
 		values[key.Value] = strings.TrimSpace(value.Value)
 	}
