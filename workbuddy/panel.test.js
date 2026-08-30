@@ -66,7 +66,7 @@ function loadPanel(overrides = {}) {
     querySelectorAll() { return []; },
     addEventListener() {},
   };
-  const sessionStorage = {
+  const sessionStorage = overrides.sessionStorage || {
     getItem(key) { return storage.has(key) ? storage.get(key) : null; },
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
@@ -130,6 +130,54 @@ test("query key replaces session key once and is removed from URL", () => {
   assert.equal(storage.get("workbuddy-mgmt-key"), "secret-value");
   assert.equal(replaced, "/panel?view=all#accounts");
   assert.equal(localWrites, 0);
+});
+
+test("Web Storage exceptions clean the query key and use the fixed prompt fallback", async t => {
+  for (const errorName of ["SecurityError", "QuotaExceededError"]) {
+    await t.test(errorName, async () => {
+      const nativeError = new Error(errorName + " native storage detail");
+      nativeError.name = errorName;
+      const sessionStorage = {
+        getItem() { throw nativeError; },
+        setItem() { throw nativeError; },
+        removeItem() { throw nativeError; },
+      };
+      let replaced = "";
+      let fetchCalls = 0;
+      const { context, elements } = loadPanel({
+        sessionStorage,
+        location: {
+          href: "http://localhost/custom/panel?view=all&key=secret-value#accounts",
+          search: "?view=all&key=secret-value",
+          pathname: "/custom/panel",
+          hash: "#accounts",
+          host: "localhost",
+        },
+        history: { replaceState(state, title, url) { replaced = url; } },
+        fetch: async () => { fetchCalls += 1; throw new Error("unexpected fetch"); },
+      });
+
+      assert.equal(replaced, "/custom/panel?view=all#accounts");
+      assert.equal(context.getKey(), null);
+      assert.equal(await context.load(false), false);
+      assert.equal(elements.get("authBox").style.display, "block");
+      assert.match(elements.get("grid").innerHTML, /请先填写 management key/);
+      assert.doesNotMatch(elements.get("grid").innerHTML, /native storage detail|SecurityError|QuotaExceededError/);
+      await assert.rejects(
+        context.api("/accounts"),
+        error => error.message === "需要管理密钥" && !error.message.includes("native storage detail"),
+      );
+
+      context.document.getElementById("keyInput").value = "manual-key";
+      await context.saveKey();
+      assert.equal(elements.get("authBox").style.display, "block");
+      assert.throws(
+        () => context.rejectPanelAuth(fakeResponse(401, "application/json", "")),
+        error => error.message === "management key 无效或缺失" && !error.message.includes("native storage detail"),
+      );
+      assert.equal(fetchCalls, 0);
+    });
+  }
 });
 
 test("model status banner hides ready and persists non-ready states", () => {

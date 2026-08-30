@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -113,18 +114,18 @@ func (s *modelStore) saveMetadata(cache metadataCacheV1) error {
 	})
 }
 
-func (s *modelStore) loadModels(identitySHA256 string) (modelCatalogCacheV1, bool, error) {
+func (s *modelStore) loadModels(identitySHA256 string, expectedRealm workBuddyRealm) (modelCatalogCacheV1, bool, error) {
 	if !validModelIdentitySHA256(identitySHA256) {
 		return modelCatalogCacheV1{}, false, fmt.Errorf("model cache identity hash is invalid")
 	}
 	path := filepath.Join(s.root, "models", identitySHA256+".json")
 	return loadModelCache(path, func(raw []byte) (modelCatalogCacheV1, error) {
-		return decodeModelCatalogCache(raw, identitySHA256)
+		return decodeModelCatalogCache(raw, identitySHA256, expectedRealm)
 	})
 }
 
 func (s *modelStore) saveModels(cache modelCatalogCacheV1) error {
-	if err := validateModelCatalogCache(cache, cache.IdentitySHA256); err != nil {
+	if err := validateModelCatalogCache(cache, cache.IdentitySHA256, cache.Realm); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(cache)
@@ -133,7 +134,7 @@ func (s *modelStore) saveModels(cache modelCatalogCacheV1) error {
 	}
 	path := filepath.Join(s.root, "models", cache.IdentitySHA256+".json")
 	return writeModelCacheAtomic(path, raw, func(current []byte) error {
-		_, err := decodeModelCatalogCache(current, cache.IdentitySHA256)
+		_, err := decodeModelCatalogCache(current, cache.IdentitySHA256, cache.Realm)
 		return err
 	})
 }
@@ -189,36 +190,42 @@ func validateMetadataCache(cache metadataCacheV1) error {
 		return fmt.Errorf("metadata cache records are empty")
 	}
 	for canonicalID, facts := range cache.Records {
-		if !validModelsDevCanonicalID(canonicalID) || facts.ID != canonicalID {
-			return fmt.Errorf("metadata cache record identity is invalid")
-		}
-		if _, err := validateModelFacts([]modelFacts{facts}); err != nil {
+		validated, err := validateModelsDevCanonicalRecord(canonicalID, facts)
+		if err != nil {
 			return fmt.Errorf("metadata cache record is invalid: %w", err)
+		}
+		if validated.Name != facts.Name ||
+			!slices.Equal(validated.SupportedInputModalities, facts.SupportedInputModalities) ||
+			!slices.Equal(validated.SupportedOutputModalities, facts.SupportedOutputModalities) {
+			return fmt.Errorf("metadata cache record is not normalized")
 		}
 	}
 	return nil
 }
 
-func decodeModelCatalogCache(raw []byte, identitySHA256 string) (modelCatalogCacheV1, error) {
+func decodeModelCatalogCache(raw []byte, identitySHA256 string, expectedRealm workBuddyRealm) (modelCatalogCacheV1, error) {
 	var cache modelCatalogCacheV1
 	if err := json.Unmarshal(raw, &cache); err != nil {
 		return modelCatalogCacheV1{}, fmt.Errorf("decode model catalog cache: %w", err)
 	}
-	if err := validateModelCatalogCache(cache, identitySHA256); err != nil {
+	if err := validateModelCatalogCache(cache, identitySHA256, expectedRealm); err != nil {
 		return modelCatalogCacheV1{}, err
 	}
 	return cache, nil
 }
 
-func validateModelCatalogCache(cache modelCatalogCacheV1, identitySHA256 string) error {
+func validateModelCatalogCache(cache modelCatalogCacheV1, identitySHA256 string, expectedRealm workBuddyRealm) error {
 	if err := validateModelCacheSchema(cache.SchemaVersion); err != nil {
 		return err
 	}
 	if !validModelIdentitySHA256(cache.IdentitySHA256) || cache.IdentitySHA256 != identitySHA256 {
 		return fmt.Errorf("model cache identity does not match")
 	}
-	if cache.Realm != workBuddyRealmCN && cache.Realm != workBuddyRealmGlobal {
-		return fmt.Errorf("model cache realm is invalid")
+	if expectedRealm != workBuddyRealmCN && expectedRealm != workBuddyRealmGlobal {
+		return fmt.Errorf("expected model cache realm is invalid")
+	}
+	if cache.Realm != expectedRealm {
+		return fmt.Errorf("model cache realm does not match")
 	}
 	if cache.FetchedAt.IsZero() {
 		return fmt.Errorf("model cache fetched_at is missing")

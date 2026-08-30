@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,7 +82,7 @@ func TestModelRuntimeFreshBootstrapReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := store.loadModels(identity.sha256()); err != nil || !found {
+	if _, found, err := store.loadModels(identity.sha256(), workBuddyRealmCN); err != nil || !found {
 		t.Fatalf("model cache found=%v err=%v", found, err)
 	}
 	if _, found, err := store.loadMetadata(); err != nil || !found {
@@ -700,7 +701,7 @@ func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 	if current.State != modelReady || current.ErrorCode != modelErrorNone || len(current.Models) != 1 || current.Models[0].ID != "serve-beta" {
 		t.Errorf("old generation overwrote current = %#v", current)
 	}
-	cached, found, err := store.loadModels(identity.sha256())
+	cached, found, err := store.loadModels(identity.sha256(), workBuddyRealmCN)
 	if err != nil || !found || len(cached.Models) != 1 || cached.Models[0].ID != "serve-beta" {
 		t.Errorf("cache=%#v found=%v err=%v", cached, found, err)
 	}
@@ -739,6 +740,123 @@ func TestModelRuntimeOldGenerationCannotCommit(t *testing.T) {
 			t.Fatalf("old generation published its failure = %#v", current)
 		}
 	})
+}
+
+func TestModelRuntimeSharedIdentityRejectsLateOlderCatalogCommit(t *testing.T) {
+	oldStarted := make(chan struct{})
+	releaseOld := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "models.dev" {
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"},"vendor/serve-beta":{"id":"serve-beta"}}`)}, nil
+		}
+		if strings.HasSuffix(req.Header.Get("Authorization"), "signature-a") {
+			close(oldStarted)
+			<-releaseOld
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		}
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-beta"]}]}}`)}, nil
+	}
+
+	root := t.TempDir()
+	store := newModelStore(root)
+	runtime := newModelRuntime(store, do)
+	saOld := syntheticStoredAuth(t, workBuddyRealmCN)
+	parts := strings.Split(saOld.Auth.AccessToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("synthetic token has %d parts", len(parts))
+	}
+	saOld.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-a"
+	saNew := *saOld
+	saNew.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-b"
+	oldIdentity, err := modelAuthIdentityFor("auth-legacy", saOld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newIdentity, err := modelAuthIdentityFor("auth-canonical", &saNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldIdentity.sha256() != newIdentity.sha256() {
+		t.Fatalf("shared identity hashes differ: %q != %q", oldIdentity.sha256(), newIdentity.sha256())
+	}
+	identitySHA256 := newIdentity.sha256()
+	backup := modelStoreTestCatalog(identitySHA256, "before-race-backup")
+	backup.Models = []modelFacts{{ID: "serve-before-backup"}}
+	primary := modelStoreTestCatalog(identitySHA256, "before-race-primary")
+	primary.FetchedAt = backup.FetchedAt.Add(time.Minute)
+	primary.Models = []modelFacts{{ID: "serve-before-primary"}}
+	if err := store.saveModels(backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.saveModels(primary); err != nil {
+		t.Fatal(err)
+	}
+
+	oldDone := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		oldDone <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-legacy", StorageJSON: mustJSON(saOld)}})
+	}()
+	<-oldStarted
+	newResult := runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-canonical", StorageJSON: mustJSON(&saNew)}})
+	if newResult.State != modelReady || len(newResult.Models) != 1 || newResult.Models[0].ID != "serve-beta" {
+		t.Fatalf("new identity generation = %#v", newResult)
+	}
+	modelPath := filepath.Join(root, "models", identitySHA256+".json")
+	primaryAfterNew := modelStoreReadFile(t, modelPath)
+	backupAfterNew := modelStoreReadFile(t, modelPath+".bak")
+
+	close(releaseOld)
+	oldResult := <-oldDone
+	if got := modelStoreReadFile(t, modelPath); !bytes.Equal(got, primaryAfterNew) {
+		t.Fatalf("late shared-identity generation replaced primary: before=%s after=%s", primaryAfterNew, got)
+	}
+	if got := modelStoreReadFile(t, modelPath+".bak"); !bytes.Equal(got, backupAfterNew) {
+		t.Fatalf("late shared-identity generation replaced backup: before=%s after=%s", backupAfterNew, got)
+	}
+	if !oldResult.executable() || len(oldResult.Models) != 1 || oldResult.Models[0].ID != "serve-beta" {
+		t.Fatalf("older auth did not adopt the committed shared catalog = %#v", oldResult)
+	}
+}
+
+func TestModelRuntimeConcurrentSharedIdentityBootstrapsRemainExecutable(t *testing.T) {
+	const authCount = 8
+	started := make(chan struct{}, authCount)
+	release := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		switch req.URL.Host {
+		case "copilot.tencent.com":
+			started <- struct{}{}
+			<-release
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		case "models.dev":
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+		default:
+			t.Fatalf("unexpected request %s", req.URL)
+			return nil, nil
+		}
+	}
+
+	runtime := newModelRuntime(newModelStore(t.TempDir()), do)
+	sa := syntheticStoredAuth(t, workBuddyRealmCN)
+	results := make(chan modelReadinessSnapshot, authCount)
+	for i := 0; i < authCount; i++ {
+		go func(index int) {
+			results <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{
+				AuthID:      fmt.Sprintf("auth-shared-%d", index),
+				StorageJSON: mustJSON(sa),
+			}})
+		}(i)
+	}
+	for i := 0; i < authCount; i++ {
+		<-started
+	}
+	close(release)
+	for i := 0; i < authCount; i++ {
+		result := <-results
+		if !result.executable() || len(result.Models) != 1 || result.Models[0].ID != "serve-alpha" {
+			t.Fatalf("shared-identity bootstrap became sticky-failed = %#v", result)
+		}
+	}
 }
 
 func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
@@ -782,7 +900,7 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		}
 		close(releaseOld)
 		<-oldDone
-		if _, found, err := store.loadModels(identity.sha256()); err != nil || found {
+		if _, found, err := store.loadModels(identity.sha256(), workBuddyRealmCN); err != nil || found {
 			t.Fatalf("stale generation cache found=%v err=%v", found, err)
 		}
 		if current := runtime.snapshotForAuthID("auth-config-catalog"); current.State != modelNotStarted || current.executable() {

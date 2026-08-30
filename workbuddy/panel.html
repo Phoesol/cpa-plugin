@@ -261,6 +261,10 @@ const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = "workbuddy-mgmt-key";
 
+function readSessionKey(){try{return sessionStorage.getItem(SS_KEY)}catch(_){return null}}
+function storeSessionKey(key){try{sessionStorage.setItem(SS_KEY,key);return true}catch(_){return false}}
+function clearSessionKey(){try{sessionStorage.removeItem(SS_KEY)}catch(_){}}
+
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
 function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
@@ -284,18 +288,19 @@ function captureUrlKey(){
   const url=new URL(window.location.href);
   const key=url.searchParams.get("key");
   if(!key) return;
-  sessionStorage.setItem(SS_KEY,key);
-  url.searchParams.delete("key");
-  history.replaceState(null,"",url.pathname+url.search+url.hash);
+  try{storeSessionKey(key)}finally{
+    url.searchParams.delete("key");
+    history.replaceState(null,"",url.pathname+url.search+url.hash);
+  }
 }
 captureUrlKey();
 function getKey(){
-  return sessionStorage.getItem(SS_KEY)||readPanelKey();
+  return readSessionKey()||readPanelKey();
 }
 async function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
   if(!v)return;
-  sessionStorage.setItem(SS_KEY,v);
+  if(!storeSessionKey(v)){showAuth();return}
   document.getElementById("authBox").style.display="none";
   if(await load(false)) loadEgressIP();
 }
@@ -658,7 +663,7 @@ async function readPanelResponse(response){
 function rejectPanelAuth(response){
   if(response.status!==401&&response.status!==403) return;
   authFailCount++;
-  sessionStorage.removeItem(SS_KEY);
+  clearSessionKey();
   showAuth();
   if(authFailCount>=3){
     authFailUntil=Date.now()+60000;

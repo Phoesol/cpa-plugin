@@ -54,31 +54,45 @@ func parseModelsDevMetadata(raw []byte) (map[string]modelFacts, error) {
 			return nil, fmt.Errorf("models.dev model ID is invalid")
 		}
 
-		facts := modelFacts{ID: canonicalID, Name: strings.TrimSpace(model.Name)}
+		facts := modelFacts{ID: canonicalID, Name: model.Name}
 		if model.Limit != nil {
-			if model.Limit.Context != nil && *model.Limit.Context < 0 {
-				return nil, fmt.Errorf("models.dev context limit is negative")
-			}
-			if model.Limit.Output != nil && *model.Limit.Output < 0 {
-				return nil, fmt.Errorf("models.dev output limit is negative")
-			}
 			facts.ContextLength = cloneInt64(model.Limit.Context)
 			facts.MaxCompletionTokens = cloneInt64(model.Limit.Output)
 		}
 		if model.Modalities != nil {
-			var err error
-			facts.SupportedInputModalities, err = validateModelsDevModalities(model.Modalities.Input)
-			if err != nil {
-				return nil, err
-			}
-			facts.SupportedOutputModalities, err = validateModelsDevModalities(model.Modalities.Output)
-			if err != nil {
-				return nil, err
-			}
+			facts.SupportedInputModalities = model.Modalities.Input
+			facts.SupportedOutputModalities = model.Modalities.Output
+		}
+		facts, err := validateModelsDevCanonicalRecord(canonicalID, facts)
+		if err != nil {
+			return nil, err
 		}
 		records[canonicalID] = facts
 	}
 	return records, nil
+}
+
+func validateModelsDevCanonicalRecord(canonicalID string, facts modelFacts) (modelFacts, error) {
+	if !validModelsDevCanonicalID(canonicalID) || facts.ID != canonicalID {
+		return modelFacts{}, fmt.Errorf("models.dev canonical record identity is invalid")
+	}
+	facts.Name = strings.TrimSpace(facts.Name)
+	if facts.ContextLength != nil && *facts.ContextLength < 0 {
+		return modelFacts{}, fmt.Errorf("models.dev context limit is negative")
+	}
+	if facts.MaxCompletionTokens != nil && *facts.MaxCompletionTokens < 0 {
+		return modelFacts{}, fmt.Errorf("models.dev output limit is negative")
+	}
+	var err error
+	facts.SupportedInputModalities, err = validateModelsDevModalities(facts.SupportedInputModalities)
+	if err != nil {
+		return modelFacts{}, err
+	}
+	facts.SupportedOutputModalities, err = validateModelsDevModalities(facts.SupportedOutputModalities)
+	if err != nil {
+		return modelFacts{}, err
+	}
+	return facts, nil
 }
 
 func validModelsDevCanonicalID(id string) bool {

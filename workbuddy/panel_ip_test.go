@@ -269,7 +269,7 @@ func TestPanelShowsAndRefreshesEgressIP(t *testing.T) {
 		{name: "key save", want: `async function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
   if(!v)return;
-  sessionStorage.setItem(SS_KEY,v);
+  if(!storeSessionKey(v)){showAuth();return}
   document.getElementById("authBox").style.display="none";
   if(await load(false)) loadEgressIP();
 }`},

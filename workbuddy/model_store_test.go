@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -115,7 +116,7 @@ func TestModelStoreSchemaV1RoundTripsAtExactPaths(t *testing.T) {
 	if err != nil || !found || !reflect.DeepEqual(loadedMetadata, metadata) {
 		t.Fatalf("loadMetadata() = %#v, %t, %v", loadedMetadata, found, err)
 	}
-	loadedModels, found, err := store.loadModels(hash)
+	loadedModels, found, err := store.loadModels(hash, workBuddyRealmCN)
 	if err != nil || !found || !reflect.DeepEqual(loadedModels, models) {
 		t.Fatalf("loadModels() = %#v, %t, %v", loadedModels, found, err)
 	}
@@ -234,6 +235,72 @@ func TestModelStoreCorruptPrimaryAndBackupReturnReadError(t *testing.T) {
 	}
 }
 
+func TestModelStoreMetadataCanonicalValidationMatchesFreshParser(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*modelFacts)
+	}{
+		{
+			name: "empty input modality",
+			mutate: func(facts *modelFacts) {
+				facts.SupportedInputModalities = []string{""}
+			},
+		},
+		{
+			name: "duplicate output modality",
+			mutate: func(facts *modelFacts) {
+				facts.SupportedOutputModalities = []string{"text", "text"}
+			},
+		},
+		{
+			name: "untrimmed input modality",
+			mutate: func(facts *modelFacts) {
+				facts.SupportedInputModalities = []string{" text "}
+			},
+		},
+		{
+			name: "untrimmed canonical name",
+			mutate: func(facts *modelFacts) {
+				facts.Name = " Model A "
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" primary falls through to backup", func(t *testing.T) {
+			root := t.TempDir()
+			validBackup := modelStoreTestMetadata("valid-backup")
+			invalidPrimary := modelStoreTestMetadata("invalid-primary")
+			facts := invalidPrimary.Records["vendor/model-a"]
+			tt.mutate(&facts)
+			invalidPrimary.Records["vendor/model-a"] = facts
+			modelStoreWriteJSON(t, filepath.Join(root, "metadata.json"), invalidPrimary)
+			modelStoreWriteJSON(t, filepath.Join(root, "metadata.json.bak"), validBackup)
+
+			got, found, err := newModelStore(root).loadMetadata()
+			if err != nil || !found || !reflect.DeepEqual(got, validBackup) {
+				t.Fatalf("loadMetadata() = %#v, %t, %v; want valid backup %#v", got, found, err, validBackup)
+			}
+		})
+
+		t.Run(tt.name+" invalid primary and backup", func(t *testing.T) {
+			root := t.TempDir()
+			for index, name := range []string{"metadata.json", "metadata.json.bak"} {
+				invalid := modelStoreTestMetadata(fmt.Sprintf("invalid-%d", index))
+				facts := invalid.Records["vendor/model-a"]
+				tt.mutate(&facts)
+				invalid.Records["vendor/model-a"] = facts
+				modelStoreWriteJSON(t, filepath.Join(root, name), invalid)
+			}
+
+			got, found, err := newModelStore(root).loadMetadata()
+			if err == nil || found {
+				t.Fatalf("loadMetadata() = %#v, %t, %v; want no valid canonical cache", got, found, err)
+			}
+		})
+	}
+}
+
 func TestModelStoreIdentityMismatchReturnsNoValidCache(t *testing.T) {
 	root := t.TempDir()
 	requestedHash := strings.Repeat("c", 64)
@@ -244,9 +311,59 @@ func TestModelStoreIdentityMismatchReturnsNoValidCache(t *testing.T) {
 	}
 	modelStoreWriteJSON(t, path, modelStoreTestCatalog(otherHash, "wrong identity"))
 
-	got, found, err := newModelStore(root).loadModels(requestedHash)
+	got, found, err := newModelStore(root).loadModels(requestedHash, workBuddyRealmCN)
 	if err == nil || found {
 		t.Fatalf("loadModels() = %#v, %t, %v; want no valid cache", got, found, err)
+	}
+}
+
+func TestModelStoreRejectsRealmMismatchedCatalogCaches(t *testing.T) {
+	tests := []struct {
+		name           string
+		expectedRealm  workBuddyRealm
+		persistedRealm workBuddyRealm
+	}{
+		{name: "CN requester with Global cache", expectedRealm: workBuddyRealmCN, persistedRealm: workBuddyRealmGlobal},
+		{name: "Global requester with CN cache", expectedRealm: workBuddyRealmGlobal, persistedRealm: workBuddyRealmCN},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			identitySHA256 := strings.Repeat(string(rune('f'-i)), 64)
+			path := filepath.Join(root, "models", identitySHA256+".json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cache := modelStoreTestCatalog(identitySHA256, "realm-mismatch")
+			cache.Realm = tt.persistedRealm
+			modelStoreWriteJSON(t, path, cache)
+
+			got, found, err := newModelStore(root).loadModels(identitySHA256, tt.expectedRealm)
+			if err == nil || found {
+				t.Fatalf("loadModels(%s requester) = %#v, %t, %v; want no valid cache", tt.expectedRealm, got, found, err)
+			}
+		})
+	}
+}
+
+func TestModelStoreRealmMismatchPrimaryFallsThroughToMatchingBackup(t *testing.T) {
+	root := t.TempDir()
+	identitySHA256 := strings.Repeat("a", 64)
+	path := filepath.Join(root, "models", identitySHA256+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	matchingBackup := modelStoreTestCatalog(identitySHA256, "matching-backup")
+	matchingBackup.Realm = workBuddyRealmCN
+	mismatchedPrimary := modelStoreTestCatalog(identitySHA256, "mismatched-primary")
+	mismatchedPrimary.Realm = workBuddyRealmGlobal
+	modelStoreWriteJSON(t, path, mismatchedPrimary)
+	modelStoreWriteJSON(t, path+".bak", matchingBackup)
+
+	got, found, err := newModelStore(root).loadModels(identitySHA256, workBuddyRealmCN)
+	if err != nil || !found || !reflect.DeepEqual(got, matchingBackup) {
+		t.Fatalf("loadModels(CN requester) = %#v, %t, %v; want matching backup %#v", got, found, err, matchingBackup)
 	}
 }
 
