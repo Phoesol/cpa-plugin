@@ -86,6 +86,32 @@ func TestBuildModelStatusUsesHostFileIDForIndependentAuthStates(t *testing.T) {
 	}
 }
 
+func TestBuildModelStatusSerializesConfiguredCatalogSource(t *testing.T) {
+	runtime := installModelStatesForTest(t, map[string]modelReadinessState{"internal-configured": modelReady})
+	snapshot := runtime.snapshotForAuthID("internal-configured")
+	snapshot.ModelSource = modelSourceConfig
+	snapshot.ModelsFetchedAt = time.Time{}
+	runtime.authSlot("internal-configured").current.Store(&snapshot)
+	metadataFetchedAt := time.Date(2026, time.August, 30, 9, 10, 11, 0, time.UTC)
+	runtime.metadataMu.Lock()
+	runtime.metadataResult = &modelMetadataResult{
+		source: modelSourceFresh,
+		cache:  metadataCacheV1{FetchedAt: metadataFetchedAt},
+		ok:     true,
+	}
+	runtime.metadataMu.Unlock()
+
+	got := buildModelStatus([]pluginapi.HostAuthFileEntry{{ID: "internal-configured", AuthIndex: "account-configured"}})
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"state":"ready","message":"模型目录已就绪","metadata_source":"fresh","metadata_fetched_at":"2026-08-30T09:10:11Z","auths":[{"auth_index":"account-configured","state":"ready","model_source":"config","models_fetched_at":"","error_code":""}]}`
+	if string(raw) != want {
+		t.Fatalf("status JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestBuildModelStatusAggregationPriority(t *testing.T) {
 	wantPriority := map[modelReadinessState]int{
 		modelReady:      1,

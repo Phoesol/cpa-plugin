@@ -12,9 +12,11 @@ built-in management dashboard.
 
 - **OAuth login** — multi-account `workbuddy-<uid>.json` auth files via the
   host's auth store. CN and Global realms share one plugin, one config block.
-- **Dynamic model catalog**: the plugin discovers and caches each authenticated
-  account's model entitlements and enriches missing metadata from models.dev.
-  Host-side `oauth-model-alias` / `oauth-excluded-models` config still applies.
+- **Model catalog**: by default the plugin discovers and caches each
+  authenticated account's model entitlements. An optional authoritative YAML
+  list can replace WorkBuddy discovery. Both modes enrich missing metadata from
+  models.dev. Host-side `oauth-model-alias` / `oauth-excluded-models` config
+  still applies.
 - **Executor** — OpenAI-compatible chat completions, both streaming (real SSE
   via `host.stream.emit`) and non-streaming (SSE folded into a single
   completion). `tool_choice` normalization, Claude Code template sanitization,
@@ -101,6 +103,13 @@ plugins:
     workbuddy:
       enabled: true
 
+      # Optional authoritative model ID list. Entries must be YAML strings.
+      # A non-empty list is the complete catalog: WorkBuddy catalog HTTP and
+      # catalog cache reads/writes are bypassed, while models.dev metadata
+      # fetch, ETag, and last-good cache behavior remains active.
+      # Missing, null, or [] keeps dynamic WorkBuddy discovery.
+      models: []
+
       # Optional plugin-level proxy for every HTTP request initiated by WorkBuddy.
       # Supported schemes: http, https, socks5, socks5h.
       # Empty/unset inherits existing CPA routing. Invalid settings and runtime
@@ -146,11 +155,23 @@ proxy traffic is sent by the plugin and does not appear in CPA's request-log.
 The OAuth URL opened by the browser is not fetched by the plugin; the browser
 needs its own network route.
 
-## Dynamic model catalog
+## Model catalog
 
 `model.static` is an offline fallback contract. It returns only `auto` with the
 generic default metadata template and never reads account caches or performs a
-network request. The first `model.for_auth` call for an account is the
+network request.
+
+When `models` is a non-empty YAML sequence of strings, it is the complete model
+list in the configured order. `model.for_auth` validates the account as usual,
+but does not request WorkBuddy catalog HTTP, read or write the per-auth WorkBuddy
+catalog cache, or delete an existing cache. models.dev metadata still uses the
+same online fetch, ETag, persistence, and last-good fallback. Fresh metadata
+publishes `ready`; a valid cached metadata fallback publishes `stale`; no valid
+metadata publishes `failed` with an empty model response. Missing `models`,
+`models: null`, and `models: []` restore dynamic discovery and can reuse the
+existing WorkBuddy catalog cache.
+
+In dynamic mode, the first `model.for_auth` call for an account is the
 authenticated bootstrap boundary:
 
 1. WorkBuddy `GET /v3/config` supplies the account's entitled model IDs and

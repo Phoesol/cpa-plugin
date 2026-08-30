@@ -128,7 +128,6 @@ func configure(raw []byte) error {
 	if err := configureProxy(nextProxyURL); err != nil {
 		return err
 	}
-	featureRuntime.Store(nextFeatures)
 
 	// Apply each setting under its own lock — no nesting.
 	checkinAutoMu.Lock()
@@ -158,7 +157,7 @@ func configure(raw []byte) error {
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
-	currentModelRuntime().advanceConfigGeneration()
+	currentModelRuntime().commitFeatureRuntime(nextFeatures)
 	return nil
 }
 

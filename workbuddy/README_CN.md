@@ -10,9 +10,9 @@
 
 - **OAuth 登录** — 通过宿主 auth store 管理多账号 `workbuddy-<uid>.json`，
   CN 和 Global 共用一个插件、一份配置。
-- **动态模型目录**：插件按已认证账号发现并缓存可用模型，再用 models.dev
-  补充缺失的 metadata。宿主侧 `oauth-model-alias` / `oauth-excluded-models`
-  配置仍然生效。
+- **模型目录**：默认按已认证账号发现并缓存可用模型，也可以用 YAML 中的完整
+  列表替代 WorkBuddy discovery。两种模式都会用 models.dev 补充缺失的 metadata。
+  宿主侧 `oauth-model-alias` / `oauth-excluded-models` 配置仍然生效。
 - **执行器** — OpenAI 兼容 chat completions，流式（真 SSE，走 `host.stream.emit`）
   和非流式（SSE 折叠成单个 completion）都支持。内置 `tool_choice` 归一、
   Claude Code 模板清洗、按区域注入 system message。
@@ -90,6 +90,12 @@ plugins:
     workbuddy:
       enabled: true
 
+      # 可选的完整 model ID 列表，每项必须是 YAML string。
+      # 非空列表就是全部模型：跳过 WorkBuddy catalog HTTP 和 catalog cache
+      # 读写，但 models.dev metadata 的 fetch、ETag 和 last-good cache 规则不变。
+      # 未设置、null 或 [] 时继续动态发现 WorkBuddy catalog。
+      models: []
+
       # WorkBuddy 插件发起的全部 HTTP 请求可使用独立代理。
       # 支持 http、https、socks5、socks5h。
       # 空值或未设置时继承现有 CPA 路由；配置无效或代理运行失败时
@@ -129,11 +135,20 @@ API 不支持单次请求覆盖代理，因此显式插件代理由插件自身�
 CPA request-log 中。浏览器打开的 OAuth URL 不由插件请求，浏览器需要自行具备
 相应网络路径。
 
-## 动态模型目录
+## 模型目录
 
 `model.static` 只是离线 fallback contract，只返回带通用 default metadata 的
-`auto`，不读账号 cache，也不发网络请求。每个账号第一次调用
-`model.for_auth` 时执行 authenticated bootstrap：
+`auto`，不读账号 cache，也不发网络请求。
+
+`models` 是非空 YAML string sequence 时，它按 YAML 顺序定义完整模型列表。
+`model.for_auth` 仍会校验账号，但不会请求 WorkBuddy catalog HTTP，不会读写账号的
+WorkBuddy catalog cache，也不会删除已有 cache。models.dev metadata 仍执行原有的
+在线 fetch、ETag、持久化和 last-good fallback。metadata fresh 时账号进入 `ready`；
+刷新失败但有有效 metadata cache 时进入 `stale`；没有有效 metadata 时进入 `failed`
+并返回空模型列表。未设置 `models`、`models: null` 和 `models: []` 都会恢复动态发现，
+并可继续使用已有 WorkBuddy catalog cache。
+
+动态模式下，每个账号第一次调用 `model.for_auth` 时执行 authenticated bootstrap：
 
 1. WorkBuddy `GET /v3/config` 提供该账号有权使用的 model ID 和 serving 字段。
    只有该端点明确返回 HTTP 404 或 405 时，才 fallback 到旧端点

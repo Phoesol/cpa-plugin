@@ -28,9 +28,10 @@ const (
 type modelSnapshotSource string
 
 const (
-	modelSourceFresh modelSnapshotSource = "fresh"
-	modelSourceCache modelSnapshotSource = "cache"
-	modelSourceNone  modelSnapshotSource = "none"
+	modelSourceFresh  modelSnapshotSource = "fresh"
+	modelSourceCache  modelSnapshotSource = "cache"
+	modelSourceConfig modelSnapshotSource = "config"
+	modelSourceNone   modelSnapshotSource = "none"
 )
 
 func (s modelReadinessState) executable() bool {
@@ -265,6 +266,10 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	identitySHA256 := identity.sha256()
 	r.configCommitMu.RLock()
 	configGeneration := r.configGeneration.Load()
+	var configuredModels []string
+	if features := currentFeatureRuntime(); features != nil {
+		configuredModels = features.configuredModels
+	}
 	key := modelGenerationKey{
 		Config:         configGeneration,
 		TokenSHA256:    sha256.Sum256([]byte(sa.Auth.AccessToken)),
@@ -290,7 +295,6 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	}
 	call := &modelAuthCall{done: make(chan struct{})}
 	slot.calls[authGeneration] = call
-	identitySlot, identityCall := r.startIdentityCall(identitySHA256)
 	snapshot := modelReadinessSnapshot{
 		State:            modelLoading,
 		ModelSource:      modelSourceNone,
@@ -305,12 +309,43 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	r.configCommitMu.RUnlock()
 
 	if r.storeError != modelErrorNone || r.store == nil {
-		r.settleIdentityCall(identitySlot, identityCall)
+		if len(configuredModels) > 0 {
+			snapshot.ModelSource = modelSourceConfig
+		}
 		snapshot.State = modelFailed
 		snapshot.ErrorCode = modelErrorCacheRead
 		return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 	}
 
+	if len(configuredModels) > 0 {
+		snapshot.ModelSource = modelSourceConfig
+		metadata := r.metadataForAuth(req.HostCallbackID, slot, key, authGeneration)
+		snapshot.MetadataSource = metadata.source
+		if metadata.ok {
+			snapshot.MetadataFetchedAt = metadata.cache.FetchedAt
+		}
+		snapshot.ErrorCode = metadata.errorCode
+		if !metadata.ok {
+			snapshot.State = modelFailed
+			return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
+		}
+
+		models := make([]pluginapi.ModelInfo, len(configuredModels))
+		for i, id := range configuredModels {
+			serving := modelFacts{ID: id}
+			models[i] = modelInfoFromSources(serving, matchModelsDevRecord(id, metadata.cache.Records))
+		}
+		snapshot.Models = models
+		if metadata.source == modelSourceFresh {
+			snapshot.State = modelReady
+			snapshot.ErrorCode = modelErrorNone
+		} else {
+			snapshot.State = modelStale
+		}
+		return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
+	}
+
+	identitySlot, identityCall := r.startIdentityCall(identitySHA256)
 	cachedModels, cachedModelsOK, modelCacheErr := r.store.loadModels(identitySHA256, identity.Realm)
 	var freshModels modelCatalogCacheV1
 	freshModelsOK := false
@@ -630,6 +665,17 @@ func (r *modelRuntime) metadataStatus() modelMetadataStatus {
 		return modelMetadataStatus{Source: modelSourceCache, FetchedAt: r.metadataCache.FetchedAt}
 	}
 	return modelMetadataStatus{Source: modelSourceNone, ErrorCode: r.storeError}
+}
+
+func (r *modelRuntime) commitFeatureRuntime(next *featureRuntimeConfig) uint64 {
+	snapshot := *next
+	snapshot.desensitizeTerms = append([]string(nil), next.desensitizeTerms...)
+	snapshot.configuredModels = append([]string(nil), next.configuredModels...)
+	r.configCommitMu.Lock()
+	featureRuntime.Store(&snapshot)
+	generation := r.configGeneration.Add(1)
+	r.configCommitMu.Unlock()
+	return generation
 }
 
 func (r *modelRuntime) advanceConfigGeneration() uint64 {

@@ -72,3 +72,26 @@ func TestRegistrationExposesForkFusionConfig(t *testing.T) {
 		t.Fatalf("oauth_client_mode = %#v", mode)
 	}
 }
+
+func TestRegistrationDocumentsConfiguredModelsContract(t *testing.T) {
+	count := 0
+	var models pluginapi.ConfigField
+	for _, field := range wbRegistration().Metadata.ConfigFields {
+		if field.Name == "models" {
+			count++
+			models = field
+		}
+	}
+	if count != 1 {
+		t.Fatalf("models config field count = %d, want 1", count)
+	}
+	if models.Type != pluginapi.ConfigFieldTypeArray {
+		t.Fatalf("models config field type = %q, want array", models.Type)
+	}
+	description := strings.ToLower(models.Description)
+	for _, required := range []string{"strings only", "non-empty", "complete", "bypasses workbuddy", "http", "cache", "models.dev", "metadata", "missing", "null", "[]"} {
+		if !strings.Contains(description, required) {
+			t.Errorf("models description missing %q: %q", required, models.Description)
+		}
+	}
+}

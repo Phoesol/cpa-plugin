@@ -48,6 +48,7 @@ type featureRuntimeConfig struct {
 	matcher            *desensitizeMatcher
 	oauthClientMode    string
 	enterpriseCredits  bool
+	configuredModels   []string
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -67,6 +68,7 @@ func currentFeatureRuntime() *featureRuntimeConfig {
 	}
 	snapshot := *cfg
 	snapshot.desensitizeTerms = append([]string(nil), cfg.desensitizeTerms...)
+	snapshot.configuredModels = append([]string(nil), cfg.configuredModels...)
 	return &snapshot
 }
 
@@ -75,6 +77,7 @@ type featureConfigYAML struct {
 	DesensitizeTerms  *[]string `yaml:"desensitize_terms"`
 	OAuthClientMode   string    `yaml:"oauth_client_mode"`
 	EnterpriseCredits *bool     `yaml:"enterprise_credits"`
+	Models            yaml.Node `yaml:"models"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -101,6 +104,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	models, err := normalizedConfiguredModels(doc.Models)
+	if err != nil {
+		return nil, err
+	}
 	return &featureRuntimeConfig{
 		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
 		desensitizeTerms:   terms,
@@ -108,7 +115,37 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		matcher:            matcher,
 		oauthClientMode:    mode,
 		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
+		configuredModels:   models,
 	}, nil
+}
+
+func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
+	if node.Kind == 0 || node.Tag == "!!null" {
+		return nil, nil
+	}
+	if node.Kind != yaml.SequenceNode {
+		return nil, errors.New("models must be an array of strings")
+	}
+	models := make([]string, len(node.Content))
+	seen := make(map[string]struct{}, len(node.Content))
+	for i, entry := range node.Content {
+		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" {
+			return nil, errors.New("models entries must be strings")
+		}
+		id := strings.TrimSpace(entry.Value)
+		if id == "" {
+			return nil, errors.New("models entries must not be empty")
+		}
+		if len(id) > maxDiscoveredModelIDBytes {
+			return nil, errors.New("models entry exceeds maximum ID length")
+		}
+		if _, exists := seen[id]; exists {
+			return nil, errors.New("models entries must not be duplicated")
+		}
+		seen[id] = struct{}{}
+		models[i] = id
+	}
+	return models, nil
 }
 
 func normalizedDesensitizeTerms(configured *[]string) ([]string, string, error) {
