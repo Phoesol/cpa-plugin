@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1708,7 +1709,7 @@ func modelRuntimeFreshFaultDo(t *testing.T, root string, fault modelRuntimeFresh
 			case modelRuntimeFaultWorkBuddySchema:
 				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(modelRuntimeRawWorkBuddyBody)}, nil
 			case modelRuntimeFaultWorkBuddySave:
-				modelRuntimeReplaceStoreRootWithFile(t, root)
+				modelRuntimeMakeModelsDirectoryReadOnly(t, root)
 			}
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		case req.URL.Host == "models.dev" && req.URL.Path == "/models.json":
@@ -1727,6 +1728,36 @@ func modelRuntimeFreshFaultDo(t *testing.T, root string, fault modelRuntimeFresh
 			t.Fatalf("unexpected model request %s", req.URL)
 			return nil, nil
 		}
+	}
+}
+
+func modelRuntimeMakeModelsDirectoryReadOnly(t *testing.T, root string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		modelRuntimeReplaceStoreRootWithFile(t, root)
+		return
+	}
+	dir := filepath.Join(root, "models")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	probe, err := os.CreateTemp(dir, ".permission-probe-*")
+	if err == nil {
+		probePath := probe.Name()
+		if closeErr := probe.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if removeErr := os.Remove(probePath); removeErr != nil {
+			t.Fatal(removeErr)
+		}
+		t.Skip("current process can write to a chmod 0500 directory")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("write probe failed with %v, want permission denied", err)
 	}
 }
 
