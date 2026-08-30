@@ -293,7 +293,7 @@ func workBuddyRealmFromAccessToken(accessToken string) (workBuddyRealm, error) {
 		return "", fmt.Errorf("JWT issuer is not an absolute URL")
 	}
 	switch strings.ToLower(issuer.Hostname()) {
-	case "codebuddy.cn", "copilot.tencent.com":
+	case "codebuddy.cn", "www.codebuddy.cn", "copilot.tencent.com":
 		return workBuddyRealmCN, nil
 	case "workbuddy.ai":
 		return workBuddyRealmGlobal, nil

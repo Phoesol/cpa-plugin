@@ -177,6 +177,7 @@ func TestWorkBuddyRealmFromAccessToken(t *testing.T) {
 		want   workBuddyRealm
 	}{
 		{issuer: "https://codebuddy.cn/realms/cli", want: workBuddyRealmCN},
+		{issuer: "https://www.codebuddy.cn/auth/realms/copilot", want: workBuddyRealmCN},
 		{issuer: "https://copilot.tencent.com/realms/cli", want: workBuddyRealmCN},
 		{issuer: "https://workbuddy.ai/realms/cli", want: workBuddyRealmGlobal},
 	}

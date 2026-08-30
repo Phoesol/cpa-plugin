@@ -534,7 +534,7 @@ func TestConfiguredModelsMetadataReadinessMatrix(t *testing.T) {
 	}
 }
 
-func TestConfiguredModelsStillValidateAuthIdentityAndTokenGeneration(t *testing.T) {
+func TestConfiguredModelsValidateAuthIdentityAndTokenGeneration(t *testing.T) {
 	metadataCalls := 0
 	runtime := newModelRuntime(newModelStore(t.TempDir()), func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		if req.URL.Host != "models.dev" {
@@ -566,6 +566,15 @@ func TestConfiguredModelsStillValidateAuthIdentityAndTokenGeneration(t *testing.
 	}
 	if metadataCalls != 0 {
 		t.Fatalf("invalid configured auth made %d metadata calls", metadataCalls)
+	}
+
+	wwwIssuerAuth := syntheticStoredAuth(t, workBuddyRealmCN)
+	wwwIssuerAuth.Auth.AccessToken = syntheticAccessToken(t, "https://www.codebuddy.cn/auth/realms/copilot")
+	wwwIssuer := runtime.ensureForAuth(authModelRequestWire{
+		AuthModelRequest: pluginapi.AuthModelRequest{AuthID: "auth-www-codebuddy-issuer", StorageJSON: mustJSON(wwwIssuerAuth)},
+	})
+	if wwwIssuer.State != modelReady || wwwIssuer.ModelSource != modelSourceConfig || !wwwIssuer.executable() || len(wwwIssuer.Models) != 1 {
+		t.Fatalf("www.codebuddy.cn configured snapshot = %#v", wwwIssuer)
 	}
 
 	firstAuth := syntheticStoredAuth(t, workBuddyRealmCN)

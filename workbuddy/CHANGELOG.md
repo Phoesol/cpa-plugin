@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.9.3
 
 ### Dynamic model bootstrap
+
+- Accept the production CN JWT issuer host `www.codebuddy.cn` during per-auth model bootstrap.
 
 - Add optional `models` YAML configuration. A non-empty single-line string list is
   the complete catalog and bypasses WorkBuddy catalog HTTP and cache access while
