@@ -264,6 +264,12 @@ func TestModelStoreMetadataCanonicalValidationMatchesFreshParser(t *testing.T) {
 				facts.Name = " Model A "
 			},
 		},
+		{
+			name: "unsupported canonical description",
+			mutate: func(facts *modelFacts) {
+				facts.Description = "cache-only description"
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -536,13 +542,13 @@ func TestWriteModelCacheAtomicReadOnlyDirectoryFailureLeavesNoTemps(t *testing.T
 	modelStoreAssertNoTemps(t, root)
 }
 
-func modelStoreTestMetadata(description string) metadataCacheV1 {
+func modelStoreTestMetadata(label string) metadataCacheV1 {
 	return metadataCacheV1{
 		SchemaVersion: 1,
-		ETag:          `W/"etag-1"`,
+		ETag:          fmt.Sprintf(`W/"%s"`, label),
 		FetchedAt:     time.Date(2026, time.August, 29, 1, 2, 3, 0, time.UTC),
 		Records: map[string]modelFacts{
-			"vendor/model-a": {ID: "vendor/model-a", Name: "Model A", Description: description},
+			"vendor/model-a": {ID: "vendor/model-a", Name: "Model A"},
 		},
 	}
 }

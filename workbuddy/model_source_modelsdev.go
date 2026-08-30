@@ -76,6 +76,9 @@ func validateModelsDevCanonicalRecord(canonicalID string, facts modelFacts) (mod
 	if !validModelsDevCanonicalID(canonicalID) || facts.ID != canonicalID {
 		return modelFacts{}, fmt.Errorf("models.dev canonical record identity is invalid")
 	}
+	if facts.Description != "" {
+		return modelFacts{}, fmt.Errorf("models.dev canonical description is unsupported")
+	}
 	facts.Name = strings.TrimSpace(facts.Name)
 	if facts.ContextLength != nil && *facts.ContextLength < 0 {
 		return modelFacts{}, fmt.Errorf("models.dev context limit is negative")

@@ -180,6 +180,40 @@ test("Web Storage exceptions clean the query key and use the fixed prompt fallba
   }
 });
 
+test("query key storage write failure never reuses an older session key", async () => {
+  const nativeError = new Error("QuotaExceededError native storage detail");
+  nativeError.name = "QuotaExceededError";
+  let replaced = "";
+  let fetchCalls = 0;
+  const sessionStorage = {
+    getItem() { return "old-value"; },
+    setItem() { throw nativeError; },
+    removeItem() { throw nativeError; },
+  };
+  const { context, elements } = loadPanel({
+    sessionStorage,
+    location: {
+      href: "http://localhost/custom/panel?key=new-value&view=all#accounts",
+      search: "?key=new-value&view=all",
+      pathname: "/custom/panel",
+      hash: "#accounts",
+      host: "localhost",
+    },
+    history: { replaceState(state, title, url) { replaced = url; } },
+    fetch: async () => { fetchCalls += 1; throw new Error("unexpected fetch"); },
+  });
+
+  assert.equal(replaced, "/custom/panel?view=all#accounts");
+  assert.equal(context.getKey(), null);
+  context.readPanelKey = () => "old-panel-value";
+  assert.equal(context.getKey(), null);
+  assert.equal(await context.load(false), false);
+  assert.equal(elements.get("authBox").style.display, "block");
+  assert.match(elements.get("grid").innerHTML, /请先填写 management key/);
+  assert.doesNotMatch(elements.get("grid").innerHTML, /old-value|new-value|native storage detail/);
+  assert.equal(fetchCalls, 0);
+});
+
 test("model status banner hides ready and persists non-ready states", () => {
   const { context, elements } = loadPanel();
   const statuses = [
@@ -278,7 +312,7 @@ test("panel response auth failures clear the key without reading bodies", async 
     await assert.rejects(context.api("/accounts"), error => error.message === message);
     assert.equal(storage.has("workbuddy-mgmt-key"), false);
 
-    storage.set("workbuddy-mgmt-key", "test-key");
+    assert.equal(context.storeSessionKey("test-key"), true);
     await assert.rejects(context.managementAPI("/plugins/workbuddy/config"), error => error.message === message);
     assert.equal(storage.has("workbuddy-mgmt-key"), false);
     assert.equal(reads, 0);
@@ -294,15 +328,15 @@ test("panel response auth failures use a fixed local cooldown", async () => {
     },
   });
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    storage.set("workbuddy-mgmt-key", "test-key");
+    assert.equal(context.storeSessionKey("test-key"), true);
     await assert.rejects(context.api("/accounts"), error => error.message === "禁止访问 (403)");
   }
-  storage.set("workbuddy-mgmt-key", "test-key");
+  assert.equal(context.storeSessionKey("test-key"), true);
   await assert.rejects(
     context.api("/accounts"),
     error => error.message === "认证多次失败，请检查管理密钥后 60s 再试",
   );
-  storage.set("workbuddy-mgmt-key", "test-key");
+  assert.equal(context.storeSessionKey("test-key"), true);
   await assert.rejects(
     context.api("/accounts"),
     error => error.message === "认证多次失败，请稍后重试（防 IP 封禁）",

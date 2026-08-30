@@ -142,13 +142,16 @@ type modelAuthCall struct {
 }
 
 type modelIdentityCall struct {
-	done      chan struct{}
-	errorCode modelErrorCode
+	done     chan struct{}
+	sequence uint64
 }
 
 type modelIdentitySlot struct {
-	mu      sync.Mutex
-	current *modelIdentityCall
+	mu                sync.Mutex
+	nextSequence      uint64
+	committedSequence uint64
+	committedConfig   uint64
+	active            map[*modelIdentityCall]struct{}
 }
 
 type metadataCall struct {
@@ -212,12 +215,16 @@ func (r *modelRuntime) authSlot(authID string) *modelAuthSlot {
 }
 
 func (r *modelRuntime) startIdentityCall(identitySHA256 string) (*modelIdentitySlot, *modelIdentityCall) {
-	candidate := &modelIdentitySlot{}
+	candidate := &modelIdentitySlot{active: make(map[*modelIdentityCall]struct{})}
 	loaded, _ := r.identitySlots.LoadOrStore(identitySHA256, candidate)
 	slot := loaded.(*modelIdentitySlot)
-	call := &modelIdentityCall{done: make(chan struct{})}
 	slot.mu.Lock()
-	slot.current = call
+	if slot.active == nil {
+		slot.active = make(map[*modelIdentityCall]struct{})
+	}
+	slot.nextSequence++
+	call := &modelIdentityCall{done: make(chan struct{}), sequence: slot.nextSequence}
+	slot.active[call] = struct{}{}
 	slot.mu.Unlock()
 	return slot, call
 }
@@ -298,7 +305,7 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	r.configCommitMu.RUnlock()
 
 	if r.storeError != modelErrorNone || r.store == nil {
-		r.settleIdentityCall(identitySlot, identityCall, modelErrorCacheRead)
+		r.settleIdentityCall(identitySlot, identityCall)
 		snapshot.State = modelFailed
 		snapshot.ErrorCode = modelErrorCacheRead
 		return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
@@ -308,11 +315,13 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	var freshModels modelCatalogCacheV1
 	freshModelsOK := false
 	modelFailure := modelErrorNone
-	identitySuperseded := false
+	var identityWaits []<-chan struct{}
+	reloadCache := false
 	catalog, err := fetchWorkBuddyCatalog(sa, req.HostCallbackID, r.do)
 	if err != nil {
 		modelFailure = workBuddyModelErrorCode(err)
-		identitySuperseded = !r.settleIdentityCall(identitySlot, identityCall, modelFailure)
+		identityWaits = r.settleIdentityCall(identitySlot, identityCall)
+		reloadCache = true
 	} else {
 		freshModels = modelCatalogCacheV1{
 			SchemaVersion:  modelCacheSchemaVersion,
@@ -322,29 +331,34 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 			Endpoint:       catalog.Endpoint,
 			Models:         catalog.Models,
 		}
-		authCurrent, identityCurrent, saveErr := r.saveModelsForGeneration(slot, key, authGeneration, identitySlot, identityCall, freshModels, modelCacheErr != nil)
+		authCurrent, sharedFresh, waits, saveErr := r.saveModelsForGeneration(slot, key, authGeneration, identitySlot, identityCall, freshModels)
 		if !authCurrent {
 			return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 		}
-		identitySuperseded = !identityCurrent
-		if identityCurrent {
-			if saveErr != nil {
-				modelFailure = modelErrorCacheWrite
-				if modelCacheErr != nil {
-					modelFailure = modelErrorCacheRead
-				}
+		identityWaits = waits
+		if sharedFresh {
+			committed, found, loadErr := r.store.loadModels(identitySHA256, identity.Realm)
+			if loadErr != nil || !found {
+				modelFailure = modelErrorCacheRead
 			} else {
+				freshModels = committed
 				freshModelsOK = true
 			}
+		} else if saveErr != nil {
+			modelFailure = modelErrorCacheWrite
+			if modelCacheErr != nil {
+				modelFailure = modelErrorCacheRead
+			}
+			reloadCache = true
+		} else {
+			freshModelsOK = true
 		}
 	}
-	if identitySuperseded {
-		latestFailure := r.waitForIdentityCall(identitySlot)
+	if reloadCache {
+		waitForIdentityCalls(identityWaits)
 		cachedModels, cachedModelsOK, modelCacheErr = r.store.loadModels(identitySHA256, identity.Realm)
 		if modelCacheErr != nil {
 			modelFailure = modelErrorCacheRead
-		} else if modelFailure == modelErrorNone {
-			modelFailure = latestFailure
 		}
 	}
 	modelSelection := selectModelCatalog(freshModels, freshModelsOK, cachedModels, cachedModelsOK, modelFailure)
@@ -381,30 +395,27 @@ func (r *modelRuntime) ensureForAuth(req authModelRequestWire) modelReadinessSna
 	return r.finishAuthCall(slot, key, authGeneration, call, snapshot)
 }
 
-func (r *modelRuntime) settleIdentityCall(slot *modelIdentitySlot, call *modelIdentityCall, errorCode modelErrorCode) bool {
+func (r *modelRuntime) settleIdentityCall(slot *modelIdentitySlot, call *modelIdentityCall) []<-chan struct{} {
 	slot.mu.Lock()
-	current := slot.current == call
-	call.errorCode = errorCode
-	close(call.done)
-	slot.mu.Unlock()
-	return current
+	defer slot.mu.Unlock()
+	return settleIdentityCallLocked(slot, call)
 }
 
-func (r *modelRuntime) waitForIdentityCall(slot *modelIdentitySlot) modelErrorCode {
-	for {
-		slot.mu.Lock()
-		call := slot.current
-		done := call.done
-		slot.mu.Unlock()
-		<-done
-
-		slot.mu.Lock()
-		if slot.current == call {
-			errorCode := call.errorCode
-			slot.mu.Unlock()
-			return errorCode
+func settleIdentityCallLocked(slot *modelIdentitySlot, call *modelIdentityCall) []<-chan struct{} {
+	waits := make([]<-chan struct{}, 0, len(slot.active)-1)
+	for active := range slot.active {
+		if active != call {
+			waits = append(waits, active.done)
 		}
-		slot.mu.Unlock()
+	}
+	delete(slot.active, call)
+	close(call.done)
+	return waits
+}
+
+func waitForIdentityCalls(waits []<-chan struct{}) {
+	for _, done := range waits {
+		<-done
 	}
 }
 
@@ -415,8 +426,7 @@ func (r *modelRuntime) saveModelsForGeneration(
 	identitySlot *modelIdentitySlot,
 	identityCall *modelIdentityCall,
 	cache modelCatalogCacheV1,
-	cacheReadFailed bool,
-) (bool, bool, error) {
+) (bool, bool, []<-chan struct{}, error) {
 	r.configCommitMu.RLock()
 	defer r.configCommitMu.RUnlock()
 	slot.mu.Lock()
@@ -424,22 +434,20 @@ func (r *modelRuntime) saveModelsForGeneration(
 	identitySlot.mu.Lock()
 	defer identitySlot.mu.Unlock()
 	if !r.authGenerationCurrentLocked(slot, key, authGeneration) {
-		close(identityCall.done)
-		return false, false, nil
+		settleIdentityCallLocked(identitySlot, identityCall)
+		return false, false, nil, nil
 	}
-	if identitySlot.current != identityCall {
-		close(identityCall.done)
-		return true, false, nil
+	if identitySlot.committedConfig == key.Config && identityCall.sequence < identitySlot.committedSequence {
+		settleIdentityCallLocked(identitySlot, identityCall)
+		return true, true, nil, nil
 	}
 	err := r.store.saveModels(cache)
-	if err != nil {
-		identityCall.errorCode = modelErrorCacheWrite
-		if cacheReadFailed {
-			identityCall.errorCode = modelErrorCacheRead
-		}
+	if err == nil {
+		identitySlot.committedConfig = key.Config
+		identitySlot.committedSequence = identityCall.sequence
 	}
-	close(identityCall.done)
-	return true, true, err
+	waits := settleIdentityCallLocked(identitySlot, identityCall)
+	return true, false, waits, err
 }
 
 func (r *modelRuntime) finishAuthCall(slot *modelAuthSlot, key modelGenerationKey, authGeneration uint64, call *modelAuthCall, snapshot modelReadinessSnapshot) modelReadinessSnapshot {

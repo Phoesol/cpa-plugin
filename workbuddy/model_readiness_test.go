@@ -859,6 +859,69 @@ func TestModelRuntimeConcurrentSharedIdentityBootstrapsRemainExecutable(t *testi
 	}
 }
 
+func TestModelRuntimeSharedIdentityFailureDoesNotDiscardConcurrentSuccess(t *testing.T) {
+	successStarted := make(chan struct{})
+	failureReturned := make(chan struct{})
+	releaseSuccess := make(chan struct{})
+	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+		if req.URL.Host == "models.dev" {
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"vendor/serve-alpha":{"id":"serve-alpha"}}`)}, nil
+		}
+		if strings.HasSuffix(req.Header.Get("Authorization"), "signature-good") {
+			close(successStarted)
+			<-releaseSuccess
+			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+		}
+		close(failureReturned)
+		return nil, errors.New(modelRuntimeRawWorkBuddyTransport)
+	}
+
+	root := t.TempDir()
+	store := newModelStore(root)
+	runtime := newModelRuntime(store, do)
+	saGood := syntheticStoredAuth(t, workBuddyRealmCN)
+	parts := strings.Split(saGood.Auth.AccessToken, ".")
+	if len(parts) != 3 {
+		t.Fatalf("synthetic token has %d parts", len(parts))
+	}
+	saGood.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-good"
+	saBad := *saGood
+	saBad.Auth.AccessToken = parts[0] + "." + parts[1] + ".signature-bad"
+	identity, err := modelAuthIdentityFor("auth-good", saGood)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goodDone := make(chan modelReadinessSnapshot, 1)
+	badDone := make(chan modelReadinessSnapshot, 1)
+	go func() {
+		goodDone <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{
+			AuthID: "auth-good", StorageJSON: mustJSON(saGood),
+		}})
+	}()
+	<-successStarted
+	go func() {
+		badDone <- runtime.ensureForAuth(authModelRequestWire{AuthModelRequest: pluginapi.AuthModelRequest{
+			AuthID: "auth-bad", StorageJSON: mustJSON(&saBad),
+		}})
+	}()
+	<-failureReturned
+	close(releaseSuccess)
+
+	goodResult := <-goodDone
+	if goodResult.State != modelReady || goodResult.ModelSource != modelSourceFresh || len(goodResult.Models) != 1 || goodResult.Models[0].ID != "serve-alpha" {
+		t.Errorf("successful shared-identity bootstrap = %#v, want fresh ready catalog", goodResult)
+	}
+	badResult := <-badDone
+	if badResult.State != modelStale || badResult.ModelSource != modelSourceCache || badResult.ErrorCode != modelErrorWorkBuddyTransport || len(badResult.Models) != 1 || badResult.Models[0].ID != "serve-alpha" {
+		t.Errorf("failed peer bootstrap = %#v, want stale shared catalog with transport error", badResult)
+	}
+	cached, found, err := store.loadModels(identity.sha256(), workBuddyRealmCN)
+	if err != nil || !found || len(cached.Models) != 1 || cached.Models[0].ID != "serve-alpha" {
+		t.Fatalf("shared cache = %#v, found=%v, err=%v", cached, found, err)
+	}
+}
+
 func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 	t.Run("in-flight catalog save", func(t *testing.T) {
 		var workBuddyCalls atomic.Int32
