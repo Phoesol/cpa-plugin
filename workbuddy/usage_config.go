@@ -146,7 +146,7 @@ func configure(raw []byte) error {
 	return nil
 }
 
-func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
+func parseValidatedConfigRoot(raw []byte) (*yaml.Node, error) {
 	if strings.TrimSpace(string(raw)) == "" {
 		return nil, nil
 	}
@@ -158,14 +158,51 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 		return nil, errors.New("config_yaml must be a mapping")
 	}
 	root := document.Content[0]
+	if err := validateConfigYAMLNode(root); err != nil {
+		return nil, err
+	}
+	return root, nil
+}
+
+func validateConfigYAMLNode(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode || node.Alias != nil || node.Anchor != "" {
+		return errors.New("config_yaml must not use anchors or aliases")
+	}
+	if node.Style&yaml.TaggedStyle != 0 {
+		return errors.New("config_yaml must not use explicit tags")
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Value == "<<" || key.Tag == "!!merge" {
+				return errors.New("config_yaml must not use merge keys")
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if err := validateConfigYAMLNode(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
+	root, err := parseValidatedConfigRoot(raw)
+	if err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, nil
+	}
 	values := make(map[string]string, len(root.Content)/2)
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
 		if key.Kind != yaml.ScalarNode {
 			continue
-		}
-		if key.Value == "<<" || key.Tag == "!!merge" {
-			return nil, errors.New("config_yaml must not use merge keys")
 		}
 
 		expected := ""
@@ -196,21 +233,18 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 }
 
 func enabledConfigValue(value string) bool {
+	value = strings.ToLower(value)
 	return value == "true" || value == "1" || value == "yes" || value == "on"
 }
 
 func parseProxyURLConfig(raw []byte) (string, error) {
-	if strings.TrimSpace(string(raw)) == "" {
+	root, err := parseValidatedConfigRoot(raw)
+	if err != nil {
+		return "", err
+	}
+	if root == nil {
 		return "", nil
 	}
-	var document yaml.Node
-	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return "", errors.New("invalid config_yaml")
-	}
-	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return "", errors.New("config_yaml must be a mapping")
-	}
-	root := document.Content[0]
 	value := ""
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value != "proxy-url" {

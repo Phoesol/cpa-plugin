@@ -83,6 +83,9 @@ type featureConfigYAML struct {
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 	var doc featureConfigYAML
 	if strings.TrimSpace(string(raw)) != "" {
+		if _, err := parseValidatedConfigRoot(raw); err != nil {
+			return nil, err
+		}
 		if err := yaml.Unmarshal(raw, &doc); err != nil {
 			return nil, errors.New("invalid config_yaml")
 		}
@@ -120,16 +123,19 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 }
 
 func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
-	if node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
+	if node.Kind == 0 {
 		return nil, nil
 	}
-	if node.Kind != yaml.SequenceNode || node.Tag != "!!seq" {
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" && node.Style&yaml.TaggedStyle == 0 {
+		return nil, nil
+	}
+	if node.Kind != yaml.SequenceNode || node.Tag != "!!seq" || node.Style&yaml.TaggedStyle != 0 {
 		return nil, errors.New("models must be an array of strings")
 	}
 	models := make([]string, len(node.Content))
 	seen := make(map[string]struct{}, len(node.Content))
 	for i, entry := range node.Content {
-		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" {
+		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" || entry.Style&yaml.TaggedStyle != 0 {
 			return nil, errors.New("models entries must be strings")
 		}
 		if strings.IndexFunc(entry.Value, func(r rune) bool {

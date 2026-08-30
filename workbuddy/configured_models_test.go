@@ -42,7 +42,7 @@ func TestParseFeatureRuntimeConfiguredModelsPreservesTrimmedOrder(t *testing.T) 
 	}{
 		{
 			name: "inline strings",
-			raw:  "models: ['  serve-alpha  ', Serve-alpha, serve beta, !!str 123]\n",
+			raw:  "models: ['  serve-alpha  ', Serve-alpha, serve beta, \"123\"]\n",
 			want: []string{"serve-alpha", "Serve-alpha", "serve beta", "123"},
 		},
 		{
@@ -72,12 +72,14 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "models is scalar", raw: "models: fixed\n"},
 		{name: "null-tagged sequence", raw: "models: !!null [serve-alpha]\n"},
 		{name: "null-tagged mapping", raw: "models: !!null {id: serve-alpha}\n"},
+		{name: "null-tagged non-null scalar", raw: "models: !!null serve-beta\n"},
 		{name: "map-tagged sequence", raw: "models: !!map [serve-alpha]\n"},
 		{name: "string-tagged sequence", raw: "models: !!str [serve-alpha]\n"},
 		{name: "custom-tagged sequence", raw: "models: !catalog [serve-alpha]\n"},
 		{name: "object entry", raw: "models: [{id: serve-alpha}]\n"},
 		{name: "nested list entry", raw: "models: [[serve-alpha]]\n"},
 		{name: "number entry", raw: "models: [123]\n"},
+		{name: "explicitly tagged string entry", raw: "models: [!!str 123]\n"},
 		{name: "boolean entry", raw: "models: [true]\n"},
 		{name: "null entry", raw: "models: [null]\n"},
 		{name: "literal multiline entry", raw: "models:\n  - |-\n    serve-alpha\n    scheduler_mode: credits\n"},
@@ -110,12 +112,29 @@ func TestParseTopLevelConfigScalarsRejectsWrongTypesAndMerges(t *testing.T) {
 		{name: "scheduler incompatible tag", raw: "scheduler_mode: !!seq credits\n"},
 		{name: "usage key mapping", raw: "usage_report_key: {value: secret}\n"},
 		{name: "root merge", raw: "defaults: &d\n  lifecycle_auto: false\n  scheduler_mode: credits\n  models: [serve-alpha]\n<<: *d\n"},
+		{name: "alias key", raw: "key_name: &k management_key\n*k: [replacement]\n"},
+		{name: "alias value", raw: "replacement: &v secret\nmanagement_key: *v\n"},
+		{name: "unused anchor", raw: "management_key: &key secret\n"},
+		{name: "false tagged null", raw: "lifecycle_auto: !!null false\n"},
+		{name: "on tagged integer", raw: "lifecycle_auto: !!int on\n"},
+		{name: "management tagged null", raw: "management_key: !!null replacement\n"},
+		{name: "proxy tagged null", raw: "proxy-url: !!null direct\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if values, err := parseTopLevelConfigScalars([]byte(tt.raw)); err == nil {
 				t.Fatalf("config scalars = %#v, want error", values)
 			}
 		})
+	}
+}
+
+func TestParseTopLevelConfigScalarsAcceptsYAMLBooleanCase(t *testing.T) {
+	values, err := parseTopLevelConfigScalars([]byte("lifecycle_auto: True\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabledConfigValue(values["lifecycle_auto"]) {
+		t.Fatalf("lifecycle_auto = %q, want enabled", values["lifecycle_auto"])
 	}
 }
 
