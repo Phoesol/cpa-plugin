@@ -120,10 +120,10 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 }
 
 func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
-	if node.Kind == 0 || node.Tag == "!!null" {
+	if node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null") {
 		return nil, nil
 	}
-	if node.Kind != yaml.SequenceNode {
+	if node.Kind != yaml.SequenceNode || node.Tag == "!!null" {
 		return nil, errors.New("models must be an array of strings")
 	}
 	models := make([]string, len(node.Content))

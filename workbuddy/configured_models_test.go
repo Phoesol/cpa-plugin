@@ -70,6 +70,8 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 	}{
 		{name: "wrong top-level kind", raw: "- models\n"},
 		{name: "models is scalar", raw: "models: fixed\n"},
+		{name: "null-tagged sequence", raw: "models: !!null [serve-alpha]\n"},
+		{name: "null-tagged mapping", raw: "models: !!null {id: serve-alpha}\n"},
 		{name: "object entry", raw: "models: [{id: serve-alpha}]\n"},
 		{name: "nested list entry", raw: "models: [[serve-alpha]]\n"},
 		{name: "number entry", raw: "models: [123]\n"},
