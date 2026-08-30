@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -22,19 +21,7 @@ func egressResponse(status int, body string) *http.Response {
 }
 
 func TestFetchEgressIPUsesSingleRoutingSnapshot(t *testing.T) {
-	source, err := os.ReadFile("panel.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(string(source), "func fetchEgressIPWithCallback(callbackID string)")
-	if start < 0 {
-		t.Fatal("fetchEgressIP source not found")
-	}
-	end := strings.Index(string(source)[start:], "\n}\n\n// Web panel")
-	if end < 0 {
-		t.Fatal("fetchEgressIP source end not found")
-	}
-	body := string(source)[start : start+end]
+	body := handlerSource(t, "panel.go", "func fetchEgressIPWithCallback(callbackID string)")
 	if got := strings.Count(body, "currentProxyState()"); got != 1 {
 		t.Fatalf("fetchEgressIP loads proxy state %d times, want 1", got)
 	}
