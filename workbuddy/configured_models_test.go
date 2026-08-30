@@ -77,6 +77,8 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "number entry", raw: "models: [123]\n"},
 		{name: "boolean entry", raw: "models: [true]\n"},
 		{name: "null entry", raw: "models: [null]\n"},
+		{name: "literal multiline entry", raw: "models:\n  - |-\n    serve-alpha\n    scheduler_mode: credits\n"},
+		{name: "escaped multiline entry", raw: "models: [\"serve-alpha\\nserve-beta\"]\n"},
 		{name: "whitespace-only entry", raw: "models: [\" \\t\\u3000 \"]\n"},
 		{name: "over 512 bytes", raw: "models: ['" + strings.Repeat("x", maxDiscoveredModelIDBytes+1) + "']\n"},
 		{name: "duplicate after trim", raw: "models: [serve-alpha, ' serve-alpha ']\n"},

@@ -136,6 +136,9 @@ func normalizedConfiguredModels(node yaml.Node) ([]string, error) {
 		if id == "" {
 			return nil, errors.New("models entries must not be empty")
 		}
+		if strings.ContainsAny(id, "\r\n") {
+			return nil, errors.New("models entries must be single-line strings")
+		}
 		if len(id) > maxDiscoveredModelIDBytes {
 			return nil, errors.New("models entry exceeds maximum ID length")
 		}

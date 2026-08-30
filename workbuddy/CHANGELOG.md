@@ -4,8 +4,8 @@
 
 ### Dynamic model bootstrap
 
-- Add optional `models` YAML configuration. A non-empty string list is the
-  complete catalog and bypasses WorkBuddy catalog HTTP and cache access while
+- Add optional `models` YAML configuration. A non-empty single-line string list is
+  the complete catalog and bypasses WorkBuddy catalog HTTP and cache access while
   retaining models.dev metadata fetch, ETag, persistence, and last-good rules.
 - Discover each authenticated account's model entitlements from WorkBuddy, with a 404/405-only legacy endpoint fallback.
 - Enrich missing serving metadata from models.dev without a static model mapping or metadata table.

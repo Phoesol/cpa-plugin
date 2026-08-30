@@ -90,7 +90,7 @@ plugins:
     workbuddy:
       enabled: true
 
-      # 可选的完整 model ID 列表，每项必须是 YAML string。
+      # 可选的完整 model ID 列表，每项必须是单行 YAML string。
       # 非空列表就是全部模型：跳过 WorkBuddy catalog HTTP 和 catalog cache
       # 读写，但 models.dev metadata 的 fetch、ETag 和 last-good cache 规则不变。
       # 未设置、null 或 [] 时继续动态发现 WorkBuddy catalog。
@@ -140,7 +140,7 @@ CPA request-log 中。浏览器打开的 OAuth URL 不由插件请求，浏览�
 `model.static` 只是离线 fallback contract，只返回带通用 default metadata 的
 `auto`，不读账号 cache，也不发网络请求。
 
-`models` 是非空 YAML string sequence 时，它按 YAML 顺序定义完整模型列表。
+`models` 是非空单行 YAML string sequence 时，它按 YAML 顺序定义完整模型列表。
 `model.for_auth` 仍会校验账号，但不会请求 WorkBuddy catalog HTTP，不会读写账号的
 WorkBuddy catalog cache，也不会删除已有 cache。models.dev metadata 仍执行原有的
 在线 fetch、ETag、持久化和 last-good fallback。metadata fresh 时账号进入 `ready`；

@@ -89,7 +89,7 @@ func TestRegistrationDocumentsConfiguredModelsContract(t *testing.T) {
 		t.Fatalf("models config field type = %q, want array", models.Type)
 	}
 	description := strings.ToLower(models.Description)
-	for _, required := range []string{"strings only", "non-empty", "complete", "bypasses workbuddy", "http", "cache", "models.dev", "metadata", "missing", "null", "[]"} {
+	for _, required := range []string{"strings only", "single-line", "non-empty", "complete", "bypasses workbuddy", "http", "cache", "models.dev", "metadata", "missing", "null", "[]"} {
 		if !strings.Contains(description, required) {
 			t.Errorf("models description missing %q: %q", required, models.Description)
 		}

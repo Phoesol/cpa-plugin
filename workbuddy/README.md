@@ -103,7 +103,7 @@ plugins:
     workbuddy:
       enabled: true
 
-      # Optional authoritative model ID list. Entries must be YAML strings.
+      # Optional authoritative model ID list. Entries must be single-line YAML strings.
       # A non-empty list is the complete catalog: WorkBuddy catalog HTTP and
       # catalog cache reads/writes are bypassed, while models.dev metadata
       # fetch, ETag, and last-good cache behavior remains active.
@@ -161,7 +161,7 @@ needs its own network route.
 generic default metadata template and never reads account caches or performs a
 network request.
 
-When `models` is a non-empty YAML sequence of strings, it is the complete model
+When `models` is a non-empty YAML sequence of single-line strings, it is the complete model
 list in the configured order. `model.for_auth` validates the account as usual,
 but does not request WorkBuddy catalog HTTP, read or write the per-auth WorkBuddy
 catalog cache, or delete an existing cache. models.dev metadata still uses the
