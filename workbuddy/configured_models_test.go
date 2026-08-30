@@ -76,6 +76,7 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "map-tagged sequence", raw: "models: !!map [serve-alpha]\n"},
 		{name: "string-tagged sequence", raw: "models: !!str [serve-alpha]\n"},
 		{name: "custom-tagged sequence", raw: "models: !catalog [serve-alpha]\n"},
+		{name: "non-specific tagged sequence", raw: "models: ! [serve-alpha]\n"},
 		{name: "object entry", raw: "models: [{id: serve-alpha}]\n"},
 		{name: "nested list entry", raw: "models: [[serve-alpha]]\n"},
 		{name: "number entry", raw: "models: [123]\n"},
@@ -119,6 +120,9 @@ func TestParseTopLevelConfigScalarsRejectsWrongTypesAndMerges(t *testing.T) {
 		{name: "on tagged integer", raw: "lifecycle_auto: !!int on\n"},
 		{name: "management tagged null", raw: "management_key: !!null replacement\n"},
 		{name: "proxy tagged null", raw: "proxy-url: !!null direct\n"},
+		{name: "proxy non-specific tag", raw: "proxy-url: ! null\n"},
+		{name: "multiple documents", raw: "proxy-url:\n---\nproxy-url: [not-a-string]\n"},
+		{name: "duplicate proxy key", raw: "proxy-url: http://proxy-a.example\nproxy-url: http://proxy-b.example\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if values, err := parseTopLevelConfigScalars([]byte(tt.raw)); err == nil {
@@ -135,6 +139,22 @@ func TestParseTopLevelConfigScalarsAcceptsYAMLBooleanCase(t *testing.T) {
 	}
 	if !enabledConfigValue(values["lifecycle_auto"]) {
 		t.Fatalf("lifecycle_auto = %q, want enabled", values["lifecycle_auto"])
+	}
+}
+
+func TestConfigureDuplicateProxyFailsClosed(t *testing.T) {
+	oldProxy := proxyState.Load()
+	t.Cleanup(func() { proxyState.Store(oldProxy) })
+	proxyState.Store(&proxyRoutingState{mode: proxyModeInherit})
+
+	err := configure(mustJSON(map[string]any{
+		"config_yaml": []byte("proxy-url: http://proxy-a.example\nproxy-url: http://proxy-b.example\n"),
+	}))
+	if err == nil {
+		t.Fatal("duplicate proxy-url was accepted")
+	}
+	if got := currentProxyState().mode; got != proxyModeBlocked {
+		t.Fatalf("proxy mode = %v, want blocked", got)
 	}
 }
 

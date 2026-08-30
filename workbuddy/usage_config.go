@@ -5,8 +5,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -151,43 +153,68 @@ func parseValidatedConfigRoot(raw []byte) (*yaml.Node, error) {
 		return nil, nil
 	}
 	var document yaml.Node
-	if err := yaml.Unmarshal(raw, &document); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&document); err != nil {
 		return nil, errors.New("invalid config_yaml")
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("config_yaml must contain exactly one document")
 	}
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return nil, errors.New("config_yaml must be a mapping")
 	}
 	root := document.Content[0]
-	if err := validateConfigYAMLNode(root); err != nil {
+	if err := validateConfigYAMLNode(root, strings.Split(string(raw), "\n")); err != nil {
 		return nil, err
 	}
 	return root, nil
 }
 
-func validateConfigYAMLNode(node *yaml.Node) error {
+func validateConfigYAMLNode(node *yaml.Node, lines []string) error {
 	if node == nil {
 		return nil
 	}
 	if node.Kind == yaml.AliasNode || node.Alias != nil || node.Anchor != "" {
 		return errors.New("config_yaml must not use anchors or aliases")
 	}
-	if node.Style&yaml.TaggedStyle != 0 {
+	if node.Style&yaml.TaggedStyle != 0 || nodeStartsWithNonSpecificTag(node, lines) {
 		return errors.New("config_yaml must not use explicit tags")
 	}
 	if node.Kind == yaml.MappingNode {
+		seen := make(map[string]struct{}, len(node.Content)/2)
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+				return errors.New("config_yaml mapping keys must be strings")
+			}
 			if key.Value == "<<" || key.Tag == "!!merge" {
 				return errors.New("config_yaml must not use merge keys")
 			}
+			if _, duplicate := seen[key.Value]; duplicate {
+				return errors.New("config_yaml must not contain duplicate keys")
+			}
+			seen[key.Value] = struct{}{}
 		}
 	}
 	for _, child := range node.Content {
-		if err := validateConfigYAMLNode(child); err != nil {
+		if err := validateConfigYAMLNode(child, lines); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func nodeStartsWithNonSpecificTag(node *yaml.Node, lines []string) bool {
+	if node.Line < 1 || node.Line > len(lines) || node.Column < 1 {
+		return false
+	}
+	line := []rune(strings.TrimSuffix(lines[node.Line-1], "\r"))
+	column := node.Column - 1
+	if column >= len(line) || line[column] != '!' {
+		return false
+	}
+	return column+1 == len(line) || line[column+1] == ' ' || line[column+1] == '\t'
 }
 
 func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
