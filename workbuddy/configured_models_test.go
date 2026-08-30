@@ -79,6 +79,8 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 		{name: "null entry", raw: "models: [null]\n"},
 		{name: "literal multiline entry", raw: "models:\n  - |-\n    serve-alpha\n    scheduler_mode: credits\n"},
 		{name: "escaped multiline entry", raw: "models: [\"serve-alpha\\nserve-beta\"]\n"},
+		{name: "escaped leading newline", raw: "models: [\"\\nserve-alpha\"]\n"},
+		{name: "escaped trailing newline", raw: "models: [\"serve-alpha\\n\"]\n"},
 		{name: "whitespace-only entry", raw: "models: [\" \\t\\u3000 \"]\n"},
 		{name: "over 512 bytes", raw: "models: ['" + strings.Repeat("x", maxDiscoveredModelIDBytes+1) + "']\n"},
 		{name: "duplicate after trim", raw: "models: [serve-alpha, ' serve-alpha ']\n"},
@@ -88,6 +90,38 @@ func TestParseFeatureRuntimeConfiguredModelsRejectsInvalidYAMLValues(t *testing.
 				t.Fatalf("configured models = %#v, want error", cfg.configuredModels)
 			}
 		})
+	}
+}
+
+func TestConfigureConfiguredModelsIgnoresScalarContinuationSettings(t *testing.T) {
+	runtime := newModelRuntime(newModelStore(t.TempDir()), nil)
+	previousRuntime := activeModelRuntime.Swap(runtime)
+	oldFeatures := featureRuntime.Load()
+	oldProxy := proxyState.Load()
+	restoreScheduler := setSchedulerMode(schedulerModeOff)
+	usageReportMu.RLock()
+	oldUsageURL, oldUsageKey := usageReportURL, usageReportKey
+	usageReportMu.RUnlock()
+	t.Cleanup(func() {
+		activeModelRuntime.Store(previousRuntime)
+		featureRuntime.Store(oldFeatures)
+		proxyState.Store(oldProxy)
+		restoreScheduler()
+		usageReportMu.Lock()
+		usageReportURL, usageReportKey = oldUsageURL, oldUsageKey
+		usageReportMu.Unlock()
+	})
+
+	for _, raw := range []string{
+		"models:\n  - >-\n    serve-alpha\n    scheduler_mode: credits\nusage_report_url: http://127.0.0.1:1\n",
+		"models:\n  - \"serve-alpha\n    scheduler_mode: credits\"\nusage_report_url: http://127.0.0.1:1\n",
+	} {
+		if err := configure(mustJSON(map[string]any{"config_yaml": []byte(raw)})); err != nil {
+			t.Fatal(err)
+		}
+		if got := loadedSchedulerMode(); got != schedulerModeOff {
+			t.Fatalf("scheduler mode = %q, want %q", got, schedulerModeOff)
+		}
 	}
 }
 

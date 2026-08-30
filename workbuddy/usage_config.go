@@ -78,45 +78,30 @@ func configure(raw []byte) error {
 			return errors.New("invalid plugin configuration")
 		}
 		configYAML = req.ConfigYAML
-		for _, line := range strings.Split(string(configYAML), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "checkin_auto:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "checkin_auto:"))
-				nextCheckinAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-			}
-			if strings.HasPrefix(line, "lifecycle_auto:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
-				v = strings.Trim(v, "\"'")
-				nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-			}
-			if strings.HasPrefix(line, "scheduler_mode:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
-				v = strings.Trim(v, "\"'")
-				if v == schedulerModeCredits {
-					nextSchedulerMode = schedulerModeCredits
-				}
-			}
-			if strings.HasPrefix(line, "usage_report_url:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_url:"))
-				cfgURL = strings.Trim(v, "\"'")
-			}
-			if strings.HasPrefix(line, "usage_report_key:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
-				cfgKey = strings.Trim(v, "\"'")
-			}
-			if strings.HasPrefix(line, "management_key:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
-				nextMgmtKey = strings.Trim(v, "\"'")
-			}
-			if strings.HasPrefix(line, "token_keepalive:") {
-				v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
-				v = strings.Trim(v, "\"'")
-				nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-			}
-		}
 	}
 
-	nextProxyURL, err := parseProxyURLConfig(configYAML)
+	configScalars, err := parseTopLevelConfigScalars(configYAML)
+	if err != nil {
+		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+		return err
+	}
+	if value, ok := configScalars["checkin_auto"]; ok {
+		nextCheckinAuto = enabledConfigValue(value)
+	}
+	if value, ok := configScalars["lifecycle_auto"]; ok {
+		nextLifecycleAuto = enabledConfigValue(value)
+	}
+	if configScalars["scheduler_mode"] == schedulerModeCredits {
+		nextSchedulerMode = schedulerModeCredits
+	}
+	cfgURL = configScalars["usage_report_url"]
+	cfgKey = configScalars["usage_report_key"]
+	nextMgmtKey = configScalars["management_key"]
+	if value, ok := configScalars["token_keepalive"]; ok {
+		nextKeepaliveAuto = enabledConfigValue(value)
+	}
+
+	nextProxyURL, err = parseProxyURLConfig(configYAML)
 	if err != nil {
 		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
 		return err
@@ -159,6 +144,33 @@ func configure(raw []byte) error {
 	ensureScheduler()
 	currentModelRuntime().commitFeatureRuntime(nextFeatures)
 	return nil
+}
+
+func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, nil
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		return nil, errors.New("invalid config_yaml")
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("config_yaml must be a mapping")
+	}
+	root := document.Content[0]
+	values := make(map[string]string, len(root.Content)/2)
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, value := root.Content[i], root.Content[i+1]
+		if key.Kind != yaml.ScalarNode || value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
+			continue
+		}
+		values[key.Value] = strings.TrimSpace(value.Value)
+	}
+	return values, nil
+}
+
+func enabledConfigValue(value string) bool {
+	return value == "true" || value == "1" || value == "yes" || value == "on"
 }
 
 func parseProxyURLConfig(raw []byte) (string, error) {
