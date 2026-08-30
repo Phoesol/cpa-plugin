@@ -112,19 +112,20 @@ model.for_auth
       -> GET /v3/config
       -> only HTTP 404/405: GET /console/enterprises/personal/models
       -> validate the complete entitlement/serving snapshot
-      -> persist the per-auth cache
+      -> persist the modelCatalogCacheV1 source snapshot
   -> enter or join the process-global models.dev flight
       -> GET https://models.dev/models.json, with cached ETag when available
-      -> validate canonical metadata and enrich only missing serving fields
-      -> persist the global metadata cache
+      -> validate the canonical metadata source snapshot
+      -> persist the metadataCacheV1 source snapshot
+  -> match WorkBuddy IDs to canonical records and enrich missing serving fields
   -> check config generation + token SHA-256 + identity SHA-256
   -> atomically publish an immutable ready or stale snapshot
 ```
 
-The source path is therefore `source -> validate -> persist -> publish`.
-Fresh data is never published if validation or persistence fails. Source
-requests use the callback-aware host bridge, but the inherited callback wire
-does not guarantee an overall request timeout.
+The data path is `source -> validate -> persist source snapshots -> enrich ->
+publish`. Fresh data is never enriched or published if validation or
+persistence fails. Source requests use the callback-aware host bridge, but the
+inherited callback wire does not guarantee an overall request timeout.
 
 The stores are separated under the root derived from `os.UserConfigDir()`:
 
@@ -136,11 +137,16 @@ CLIProxyAPI/workbuddy/model-catalog/
   models/<identity-sha256>.json.bak
 ```
 
+`metadataCacheV1` contains `schema_version`, opaque `etag`, `fetched_at`, and
+canonical `records`; it has no realm or identity. It validates its own schema,
+timestamp, and canonical-record content. `modelCatalogCacheV1` contains
+`schema_version`, `identity_sha256`, `realm`, `fetched_at`, `endpoint`, and the
+validated WorkBuddy `models`. Identity and realm validation applies only to
+this per-auth model cache.
+
 Each successful replacement first preserves the previous valid primary as
-`.bak`. A cache is usable only after schema, timestamps, realm, identity hash,
-and model facts validate. With no valid cache, either source failing leaves the
-auth `failed`; with a valid last-good for every failed source, the auth is
-published `stale`.
+`.bak`. With no valid cache, either source failing leaves the auth `failed`;
+with a valid last-good for every failed source, the auth is published `stale`.
 
 The per-auth flight serializes WorkBuddy refreshes for one auth while allowing
 different auths to initialize concurrently. The global flight shares one
