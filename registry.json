@@ -1,15 +1,15 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "plugins": [
     {
       "id": "workbuddy",
       "name": "WorkBuddy",
       "description": "Tencent CodeBuddy (WorkBuddy) OAuth provider for CLIProxyAPI: multi-account login, dynamic models, chat executor, CN daily check-in, Global one-shot expert trial (manual), credit lifecycle (disable CN / delete Global when exhausted), credits panel with CN/Global filters, optional credits-aware scheduler.",
       "author": "Sliverkiss",
-      "version": "0.9.3",
-      "repository": "https://github.com/Sliverkiss/cpa-plugin",
+      "version": "0.9.3.1",
+      "repository": "https://github.com/Phoesol/cpa-plugin",
       "logo": "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png",
-      "homepage": "https://github.com/Sliverkiss/cpa-plugin/tree/main/workbuddy",
+      "homepage": "https://github.com/Phoesol/cpa-plugin/tree/main/workbuddy",
       "license": "MIT",
       "tags": [
         "Provider",
@@ -17,7 +17,19 @@
         "CodeBuddy",
         "WorkBuddy",
         "Management"
-      ]
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://raw.githubusercontent.com/Phoesol/cpa-plugin/main/artifacts/workbuddy/0.9.3.1/workbuddy_0.9.3.1_windows_amd64.zip",
+            "sha256": "3c0b21047562ab203ea42121d8aca5532db0371a0a980916004e1d52285b87fe",
+            "size": 3314143
+          }
+        ]
+      }
     },
     {
       "id": "qoderwork",
