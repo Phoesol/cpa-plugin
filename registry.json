@@ -24,7 +24,7 @@
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://raw.githubusercontent.com/Phoesol/cpa-plugin/main/artifacts/workbuddy/0.9.3.1/workbuddy_0.9.3.1_windows_amd64.zip",
+            "url": "https://raw.githubusercontent.com/Phoesol/cpa-plugin/241be5335e50349c0994181e41aba7ef462681a2/artifacts/workbuddy/0.9.3.1/workbuddy_0.9.3.1_windows_amd64.zip",
             "sha256": "3c0b21047562ab203ea42121d8aca5532db0371a0a980916004e1d52285b87fe",
             "size": 3314143
           }
