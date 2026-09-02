@@ -134,6 +134,18 @@ func hostBridgeAvailable() bool {
 	return hostAPI != nil && hostAPI.call != nil
 }
 
+// useDirectHTTPBridgeFor centralizes the inherited-route decision shared by
+// buffered and streaming requests. On Windows, nested host callbacks can move
+// the c-shared stack while a plugin RPC is active; both paths must therefore
+// stay on the plugin-owned client instead of only protecting buffered calls.
+func useDirectHTTPBridgeFor(goos string, bridgeAvailable bool) bool {
+	return goos == "windows" || !bridgeAvailable
+}
+
+func useDirectHTTPBridge() bool {
+	return useDirectHTTPBridgeFor(runtime.GOOS, hostBridgeAvailable())
+}
+
 // hostHTTPDo performs a buffered upstream call using the active routing state.
 // Request bodies are only buffered when inherited host-bridge routing requires
 // serialization; explicit proxy mode sends the original request once.
@@ -184,7 +196,7 @@ func hostHTTPDoWithStateAndCallback(state *proxyRoutingState, req *http.Request,
 	// rendering the stack response pointer dangling and causing "unexpected
 	// end of JSON input". Bypass host bridge on Windows and make direct HTTP
 	// calls.
-	if !hostBridgeAvailable() || runtime.GOOS == "windows" {
+	if useDirectHTTPBridge() {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
 	wire := newRPCHostHTTPRequestWire(req, bodyBytes, callbackID)
@@ -284,7 +296,7 @@ func hostHTTPDoStreamWithCallback(req *http.Request, callbackID string) (*hostHT
 		_ = req.Body.Close()
 		bodyBytes = b
 	}
-	if !hostBridgeAvailable() {
+	if useDirectHTTPBridge() {
 		return hostHTTPDoStreamDirect(req, bodyBytes)
 	}
 	wire := newRPCHostHTTPRequestWire(req, bodyBytes, callbackID)

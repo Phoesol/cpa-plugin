@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.3.1
+
+### Windows runtime compatibility
+
+- Route both buffered and streaming inherited HTTP calls through the
+  plugin-owned client on Windows. This preserves the existing c-shared stack
+  movement workaround for SSE instead of protecting only buffered callbacks.
+- Publish through a release-backed direct-artifact registry so CPAMC's manual
+  Plugin Store update no longer depends on a missing or incompatible upstream
+  GitHub release tag.
+
 ## 0.9.3
 
 ### Dynamic model bootstrap
